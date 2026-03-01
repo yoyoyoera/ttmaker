@@ -370,10 +370,29 @@ fun YoyoTimetableScreen() {
                     onSave = { savedEvent ->
                         if (savedEvent.dayIndex == -1) {
                             unassignedList = unassignedList.filter { it.id != savedEvent.id } + savedEvent
+                            events = events.filter { it.id != savedEvent.id }
+                            editingEvent = null
                         } else {
-                            events = events.filter { it.id != savedEvent.id } + savedEvent
+                            // 1. 겹침 판별 (본인 제외)
+                            val newStartMins = savedEvent.startHour * 60 + savedEvent.startMinute
+                            val newEndMins = savedEvent.endHour * 60 + savedEvent.endMinute
+
+                            val overlaps = events.filter { old ->
+                                val oldStart = old.startHour * 60 + old.startMinute
+                                val oldEnd = old.endHour * 60 + old.endMinute
+                                old.id != savedEvent.id && old.dayIndex == savedEvent.dayIndex && newStartMins < oldEnd && newEndMins > oldStart
+                            }
+
+                            // 2. 겹치면 팝업 띄우고, 안 겹치면 바로 저장
+                            if (overlaps.isNotEmpty()) {
+                                overlapDialogInfo = OverlapInfo(savedEvent, overlaps)
+                                editingEvent = null
+                            } else {
+                                events = events.filter { it.id != savedEvent.id } + savedEvent
+                                unassignedList = unassignedList.filter { it.id != savedEvent.id }
+                                editingEvent = null
+                            }
                         }
-                        editingEvent = null
                     }
                 )
             }
@@ -409,6 +428,7 @@ fun YoyoTimetableScreen() {
                     }
                     updated.add(info.newEvent)
                     events = updated
+                    unassignedList = unassignedList.filter { it.id != info.newEvent.id } // 🔥 찌꺼기 제거
                     overlapDialogInfo = null
                 }) { Text("덮어쓰기", color = Color(0xFF27AE60), fontWeight = FontWeight.Bold) }
             },
@@ -416,34 +436,10 @@ fun YoyoTimetableScreen() {
                 Row {
                     TextButton(onClick = { overlapDialogInfo = null; currentMode = "NORMAL"; activeEvent = null }) { Text("취소", color = Color.Gray) }
                     TextButton(onClick = {
-                        val updated = events.toMutableList()
-                        updated.removeAll { it.id == info.newEvent.id }
-                        val dayIdx = info.newEvent.dayIndex
+                        // 🔥 기획자님 아이디어 적용: 드래그용 "양방향 자동 밀어내기" 함수로 교체!
                         val newStart = info.newEvent.startHour * 60 + info.newEvent.startMinute
-                        val newEnd = info.newEvent.endHour * 60 + info.newEvent.endMinute
-
-                        val dayEvents = updated.filter { it.dayIndex == dayIdx }
-                        updated.removeAll(dayEvents)
-
-                        val beforeEvents = dayEvents.filter { (it.endHour * 60 + it.endMinute) <= newStart }
-                        val afterEvents = dayEvents.filter { (it.endHour * 60 + it.endMinute) > newStart }
-                        val sortedAfterEvents = afterEvents.sortedBy { it.startHour * 60 + it.startMinute }
-
-                        updated.addAll(beforeEvents)
-                        updated.add(info.newEvent)
-
-                        sortedAfterEvents.fold(newEnd) { boundary, old ->
-                            val oldStart = old.startHour * 60 + old.startMinute
-                            val oldEnd = old.endHour * 60 + old.endMinute
-                            val shiftedStart = maxOf(oldStart, boundary)
-                            val shiftedEnd = shiftedStart + (oldEnd - oldStart)
-                            if (shiftedStart < 1440) {
-                                val finalEnd = minOf(shiftedEnd, 1440)
-                                updated.add(old.copy(startHour = shiftedStart / 60, startMinute = shiftedStart % 60, endHour = finalEnd / 60, endMinute = finalEnd % 60))
-                                finalEnd
-                            } else boundary
-                        }
-                        events = updated
+                        events = finalizeDropWithPush(events, info.newEvent, newStart, info.newEvent.dayIndex)
+                        unassignedList = unassignedList.filter { it.id != info.newEvent.id } // 🔥 찌꺼기 제거
                         overlapDialogInfo = null
                     }) { Text("밀어넣기", color = Color(0xFF2980B9), fontWeight = FontWeight.Bold) }
                 }
