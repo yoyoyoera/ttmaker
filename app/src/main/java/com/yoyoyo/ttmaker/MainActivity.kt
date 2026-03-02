@@ -21,7 +21,6 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -49,6 +48,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -80,6 +80,7 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -117,8 +118,7 @@ val initialSampleEvents = listOf(
     EventData("오전 세미나", "4층 세미나실\n프론트엔드와 백엔드...", 11, 0, 14, 0, 1, Color(0xFF8E44AD)),
     EventData("점심식사", "2층 구내식당", 14, 0, 15, 0, 0, Color(0xFF2980B9)),
     EventData("점심식사", "애슐리퀸즈 부산대점", 14, 0, 15, 0, 2, Color(0xFF2980B9)),
-    EventData("2차 회의", "3층 기획실\n앱의 진행 방향에 관해", 15, 0, 17, 0, 0, Color(0xFF27AE60)),
-    EventData("시상식", "", 17, 0, 18, 0, 0, Color(0xFFE67E22))
+    EventData("2차 회의", "3층 기획실\n앱의 진행 방향에 관해", 15, 0, 17, 0, 0, Color(0xFF27AE60))
 )
 
 val initialUnassignedEvents = listOf(
@@ -143,7 +143,7 @@ fun YoyoTimetableScreen() {
     var currentMode by remember { mutableStateOf("NORMAL") }
     var activeEvent by remember { mutableStateOf<EventData?>(null) }
 
-    var editingEvent by remember { mutableStateOf<EventData?>(null) } // 편집 화면 상태
+    var editingEvent by remember { mutableStateOf<EventData?>(null) }
 
     var isExternalDragging by remember { mutableStateOf(false) }
     var externalDragEvent by remember { mutableStateOf<EventData?>(null) }
@@ -160,7 +160,6 @@ fun YoyoTimetableScreen() {
     var gridGlobalY by remember { mutableFloatStateOf(0f) }
     var gridHeightPx by remember { mutableFloatStateOf(0f) }
 
-    var trayGlobalPos by remember { mutableStateOf(Offset.Zero) }
     var itemBounds by remember { mutableStateOf(mapOf<String, Rect>()) }
     val currentUnassignedList by rememberUpdatedState(unassignedList)
     val currentItemBounds by rememberUpdatedState(itemBounds)
@@ -173,7 +172,6 @@ fun YoyoTimetableScreen() {
         Column(modifier = Modifier.fillMaxSize()) {
             Text(text = "제 1차 요요요컴퍼니 컨퍼런스", fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
 
-            // 시간표 영역
             Box(modifier = Modifier.fillMaxWidth().weight(1f).onGloballyPositioned {
                 gridGlobalX = it.positionInWindow().x
                 gridGlobalY = it.positionInWindow().y
@@ -195,8 +193,6 @@ fun YoyoTimetableScreen() {
                         externalDragPos = null
                     },
                     onExternalCancel = {
-                        val eEvent = externalDragEvent
-                        if (eEvent != null) unassignedList = unassignedList + eEvent
                         isExternalDragging = false
                         externalDragEvent = null
                         externalDragPos = null
@@ -211,7 +207,7 @@ fun YoyoTimetableScreen() {
                     },
                     onEventLongClick = { event -> selectedEvent = event },
                     onEventDeselect = { selectedEvent = null },
-                    onEventClick = { event -> editingEvent = event }, // 클릭 시 편집
+                    onEventClick = { event -> editingEvent = event },
                     onEventCopy = { eventToCopy -> copiedEvent = eventToCopy; selectedEvent = null },
                     onEventMoveStart = { eventToMove -> currentMode = "MOVE"; activeEvent = eventToMove; selectedEvent = null },
                     onEventStretchStart = { eventToStretch -> currentMode = "STRETCH"; activeEvent = eventToStretch; selectedEvent = null },
@@ -222,20 +218,16 @@ fun YoyoTimetableScreen() {
                     },
                     onEventActionInvalid = { activeEvent = activeEvent?.copy() },
                     onActionCancel = { currentMode = "NORMAL"; activeEvent = null; selectedEvent = null },
-
                     onEventPaste = { dayIndex, startHour, startMinute ->
                         copiedEvent?.let { copied ->
                             val durationMins = (copied.endHour * 60 + copied.endMinute) - (copied.startHour * 60 + copied.startMinute)
                             val newStartMins = startHour * 60 + startMinute
-                            val newEndMins = minOf(newStartMins + durationMins, 24 * 60)
+                            val newEndMins = newStartMins + durationMins
 
                             val newEvent = copied.copy(
-                                startHour = newStartMins / 60,
-                                startMinute = newStartMins % 60,
-                                endHour = newEndMins / 60,
-                                endMinute = newEndMins % 60,
-                                dayIndex = dayIndex,
-                                id = UUID.randomUUID().toString()
+                                startHour = newStartMins / 60, startMinute = newStartMins % 60,
+                                endHour = newEndMins / 60, endMinute = newEndMins % 60,
+                                dayIndex = dayIndex, id = UUID.randomUUID().toString()
                             )
 
                             val overlaps = events.filter { old ->
@@ -244,11 +236,8 @@ fun YoyoTimetableScreen() {
                                 old.dayIndex == dayIndex && newStartMins < oldEnd && newEndMins > oldStart
                             }
 
-                            if (overlaps.isNotEmpty()) {
-                                overlapDialogInfo = OverlapInfo(newEvent, overlaps)
-                            } else {
-                                events = events + newEvent
-                            }
+                            if (overlaps.isNotEmpty()) overlapDialogInfo = OverlapInfo(newEvent, overlaps)
+                            else events = events + newEvent
                         }
                     },
                     onEventAdd = { dayIndex, startHour, startMinute ->
@@ -257,49 +246,28 @@ fun YoyoTimetableScreen() {
                 )
             }
 
-            Box(modifier = Modifier.fillMaxWidth().height(110.dp).background(Color(0xFFEBEBEB)).onGloballyPositioned { trayGlobalPos = it.positionInWindow() }
-                .pointerInput(Unit) {
-                    detectDragGesturesAfterLongPress(
-                        onDragStart = { localOffset ->
-                            val globalTouch = trayGlobalPos + localOffset
-                            val touchedEntry = currentItemBounds.entries.find { it.value.contains(globalTouch) }
-                            if (touchedEntry != null) {
-                                val event = currentUnassignedList.find { it.id == touchedEntry.key }
-                                if (event != null) {
-                                    externalDragEvent = event.copy(startHour = 0, startMinute = 0, endHour = 1, endMinute = 0)
-                                    externalDragPos = globalTouch
-                                    isExternalDragging = true
-                                    selectedEvent = null
-                                    unassignedList = unassignedList.filter { it.id != event.id }
-                                }
-                            }
-                        },
-                        onDrag = { change, dragAmount ->
-                            change.consume()
-                            if (isExternalDragging) {
-                                val currentPos = externalDragPos
-                                if (currentPos != null) externalDragPos = currentPos + dragAmount
-                            }
-                        },
-                        onDragEnd = { if (isExternalDragging) externalDropSignal++ },
-                        onDragCancel = { if (isExternalDragging) externalDropSignal++ }
-                    )
-                }
-            ) {
+            Box(modifier = Modifier.fillMaxWidth().height(110.dp).background(Color(0xFFEBEBEB))) {
                 LazyRow(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
                     items(unassignedList, key = { it.id }) { event ->
                         val isBeingDragged = isExternalDragging && externalDragEvent?.id == event.id
                         UnassignedEventBlock(
                             event = event, isBeingDragged = isBeingDragged,
                             modifier = Modifier.animateItem().onGloballyPositioned { coords -> itemBounds = itemBounds + (event.id to coords.boundsInWindow()) },
+                            onDragStart = { globalOffset ->
+                                externalDragEvent = event.copy(startHour = 0, startMinute = 0, endHour = 1, endMinute = 0)
+                                externalDragPos = globalOffset
+                                isExternalDragging = true
+                                selectedEvent = null
+                            },
+                            onDrag = { dragAmount ->
+                                val currentPos = externalDragPos
+                                if (currentPos != null) externalDragPos = currentPos + dragAmount
+                            },
+                            onDragEnd = { externalDropSignal++ },
                             onClick = { editingEvent = event }
                         )
                     }
-                    item {
-                        AddEventButton(onClick = {
-                            editingEvent = EventData("새 일정", "", 0, 0, 1, 0, -1, Color(0xFF95A5A6))
-                        })
-                    }
+                    item { AddEventButton(onClick = { editingEvent = EventData("새 일정", "", 0, 0, 1, 0, -1, Color(0xFF95A5A6)) }) }
                 }
             }
 
@@ -339,16 +307,7 @@ fun YoyoTimetableScreen() {
             val animX by animateDpAsState(offsetX, tween(0), label = "ovX")
             val animY by animateDpAsState(offsetY, tween(0), label = "ovY")
 
-            Box(modifier = Modifier
-                .absoluteOffset(x = animX, y = animY)
-                .width(blockWidth).height(blockHeight)
-                .padding(horizontal = 6.dp, vertical = 2.dp)
-                .shadow(12.dp, RoundedCornerShape(8.dp))
-                .clip(RoundedCornerShape(8.dp))
-                .background(eEvent.color)
-                .padding(8.dp)
-                .zIndex(100f)
-            ) {
+            Box(modifier = Modifier.absoluteOffset(x = animX, y = animY).width(blockWidth).height(blockHeight).padding(horizontal = 6.dp, vertical = 2.dp).shadow(12.dp, RoundedCornerShape(8.dp)).clip(RoundedCornerShape(8.dp)).background(eEvent.color).padding(8.dp).zIndex(100f)) {
                 Column {
                     Text(text = eEvent.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (eEvent.description.isNotEmpty()) Text(text = eEvent.description, color = Color.White.copy(alpha = 0.9f), fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 14.sp)
@@ -356,7 +315,6 @@ fun YoyoTimetableScreen() {
             }
         }
 
-        // 🔥 일정 추가/편집 풀스크린 오버레이
         AnimatedVisibility(
             visible = editingEvent != null,
             enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(400, easing = CubicBezierEasing(0.2f, 0.8f, 0.2f, 1f))) + fadeIn(tween(400)),
@@ -373,7 +331,6 @@ fun YoyoTimetableScreen() {
                             events = events.filter { it.id != savedEvent.id }
                             editingEvent = null
                         } else {
-                            // 1. 겹침 판별 (본인 제외)
                             val newStartMins = savedEvent.startHour * 60 + savedEvent.startMinute
                             val newEndMins = savedEvent.endHour * 60 + savedEvent.endMinute
 
@@ -383,7 +340,6 @@ fun YoyoTimetableScreen() {
                                 old.id != savedEvent.id && old.dayIndex == savedEvent.dayIndex && newStartMins < oldEnd && newEndMins > oldStart
                             }
 
-                            // 2. 겹치면 팝업 띄우고, 안 겹치면 바로 저장
                             if (overlaps.isNotEmpty()) {
                                 overlapDialogInfo = OverlapInfo(savedEvent, overlaps)
                                 editingEvent = null
@@ -428,7 +384,7 @@ fun YoyoTimetableScreen() {
                     }
                     updated.add(info.newEvent)
                     events = updated
-                    unassignedList = unassignedList.filter { it.id != info.newEvent.id } // 🔥 찌꺼기 제거
+                    unassignedList = unassignedList.filter { it.id != info.newEvent.id }
                     overlapDialogInfo = null
                 }) { Text("덮어쓰기", color = Color(0xFF27AE60), fontWeight = FontWeight.Bold) }
             },
@@ -436,10 +392,9 @@ fun YoyoTimetableScreen() {
                 Row {
                     TextButton(onClick = { overlapDialogInfo = null; currentMode = "NORMAL"; activeEvent = null }) { Text("취소", color = Color.Gray) }
                     TextButton(onClick = {
-                        // 🔥 기획자님 아이디어 적용: 드래그용 "양방향 자동 밀어내기" 함수로 교체!
                         val newStart = info.newEvent.startHour * 60 + info.newEvent.startMinute
                         events = finalizeDropWithPush(events, info.newEvent, newStart, info.newEvent.dayIndex)
-                        unassignedList = unassignedList.filter { it.id != info.newEvent.id } // 🔥 찌꺼기 제거
+                        unassignedList = unassignedList.filter { it.id != info.newEvent.id }
                         overlapDialogInfo = null
                     }) { Text("밀어넣기", color = Color(0xFF2980B9), fontWeight = FontWeight.Bold) }
                 }
@@ -449,22 +404,31 @@ fun YoyoTimetableScreen() {
 }
 
 // ==========================================
-// 🔥 1. 이동/길이조절 계산 함수
+// 1. 이동/길이조절 계산 함수
 // ==========================================
 fun calculateLivePreview(events: List<EventData>, movingEvent: EventData, pointer: Offset, dragTouchOffset: Offset, hourHeightPx: Float, columnWidthPx: Float, isExternalDrag: Boolean = false, isInsideGrid: Boolean = true): PreviewResult {
     val minuteHeightPx = hourHeightPx / 60f
     val hoverDayIndex = (pointer.x / columnWidthPx).toInt().coerceIn(0, 2)
-    val blockTopY = pointer.y - dragTouchOffset.y
-    val exactStartMins = (blockTopY / minuteHeightPx).toInt()
+    val topPaddingPx = hourHeightPx / 2f
+    val exactStartMins = ((pointer.y - dragTouchOffset.y - topPaddingPx) / minuteHeightPx).toInt()
     val duration = (movingEvent.endHour * 60 + movingEvent.endMinute) - (movingEvent.startHour * 60 + movingEvent.startMinute)
 
     val nearestHourMins = (exactStartMins / 60f).roundToInt() * 60
     val isMagneticSnap = abs(exactStartMins - nearestHourMins) <= 18
     val displayStartMins = if (isMagneticSnap) nearestHourMins else exactStartMins
+
+    // 🔥 v0.52: 24시간 경계선 제한 (이동 모드 시 도화지 밖으로 나가는 것 철통 방어)
     val clampedStartMins = displayStartMins.coerceIn(0, 24 * 60 - duration)
     val clampedEndMins = clampedStartMins + duration
 
     val freeX = pointer.x - dragTouchOffset.x
+
+    // 🔥 v0.52: 시각적 freeY도 0시 위, 24시 밑으로 삐져나가지 못하게 꽉 묶어둠 (Clamp)
+    val rawFreeY = pointer.y - dragTouchOffset.y
+    val minFreeY = topPaddingPx
+    val maxFreeY = topPaddingPx + (24 * 60 - duration) * minuteHeightPx
+    val freeY = rawFreeY.coerceIn(minFreeY, maxFreeY)
+
     val others = events.filter { it.id != movingEvent.id }
     val dayOthers = others.filter { it.dayIndex == hoverDayIndex }.sortedBy { it.startHour * 60 + it.startMinute }
     val previewDayEvents = mutableListOf<EventData>()
@@ -509,13 +473,14 @@ fun calculateLivePreview(events: List<EventData>, movingEvent: EventData, pointe
 
     val finalEvents = others.filter { it.dayIndex != hoverDayIndex }.toMutableList()
     finalEvents.addAll(previewDayEvents)
-    return PreviewResult(finalEvents, freeX, blockTopY, isMagneticSnap)
+    return PreviewResult(finalEvents, freeX, freeY, isMagneticSnap)
 }
 
 fun calculateStretchPreview(events: List<EventData>, activeEvent: EventData, pointerY: Float, stretchType: String, hourHeightPx: Float): PreviewResult {
     val minuteHeightPx = hourHeightPx / 60f
-    val pointerMins = (pointerY / minuteHeightPx).toInt()
-    val snappedMins = ((pointerMins / snapIntervalMins.toFloat()).roundToInt() * snapIntervalMins).coerceIn(0, 24 * 60)
+    val topPaddingPx = hourHeightPx / 2f
+    val pointerMins = ((pointerY - topPaddingPx) / minuteHeightPx).toInt()
+    val snappedMins = ((pointerMins / snapIntervalMins.toFloat()).roundToInt() * snapIntervalMins)
 
     val oldStart = activeEvent.startHour * 60 + activeEvent.startMinute
     val oldEnd = activeEvent.endHour * 60 + activeEvent.endMinute
@@ -530,8 +495,14 @@ fun calculateStretchPreview(events: List<EventData>, activeEvent: EventData, poi
     if (stretchType == "TOP") {
         val blocksAbove = dayOthers.filter { (it.endHour * 60 + it.endMinute) <= oldStart }.sortedByDescending { it.endHour * 60 + it.endMinute }
         val unaffected = dayOthers.filter { (it.endHour * 60 + it.endMinute) > oldStart }
-        val minStartAllowed = blocksAbove.sumOf { (it.endHour * 60 + it.endMinute) - (it.startHour * 60 + it.startMinute) }
-        newStart = maxOf(minStartAllowed, minOf(snappedMins, oldEnd - snapIntervalMins))
+        val limitByBlocks = blocksAbove.sumOf { (it.endHour * 60 + it.endMinute) - (it.startHour * 60 + it.startMinute) }
+        val absoluteMin = if (activeEvent.dayIndex > 0) -30 else 0
+
+        if (pointerMins < 0 && activeEvent.dayIndex > 0) {
+            newStart = maxOf(absoluteMin, pointerMins)
+        } else {
+            newStart = maxOf(limitByBlocks, minOf(snappedMins, oldEnd - snapIntervalMins))
+        }
 
         blocksAbove.fold(newStart) { boundary, old ->
             val oDur = (old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)
@@ -544,8 +515,13 @@ fun calculateStretchPreview(events: List<EventData>, activeEvent: EventData, poi
     } else {
         val blocksBelow = dayOthers.filter { (it.startHour * 60 + it.startMinute) >= oldEnd }.sortedBy { it.startHour * 60 + it.startMinute }
         val unaffected = dayOthers.filter { (it.startHour * 60 + it.startMinute) < oldEnd }
-        val maxEndAllowed = 24 * 60 - blocksBelow.sumOf { (it.endHour * 60 + it.endMinute) - (it.startHour * 60 + it.startMinute) }
-        newEnd = minOf(maxEndAllowed, maxOf(snappedMins, oldStart + snapIntervalMins))
+        val maxEndAllowed = 48 * 60 - blocksBelow.sumOf { (it.endHour * 60 + it.endMinute) - (it.startHour * 60 + it.startMinute) }
+
+        if (pointerMins > 24 * 60 && activeEvent.dayIndex < 2) {
+            newEnd = minOf(pointerMins, 24 * 60 + 30)
+        } else {
+            newEnd = minOf(maxEndAllowed, maxOf(snappedMins, oldStart + snapIntervalMins))
+        }
 
         blocksBelow.fold(newEnd) { boundary, old ->
             val oDur = (old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)
@@ -600,7 +576,7 @@ fun finalizeDropWithPush(events: List<EventData>, movingEvent: EventData, finalS
         pushDownList.fold(snappedEndMins) { boundary, old ->
             val oDur = (old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)
             val sStart = maxOf(old.startHour * 60 + old.startMinute, boundary)
-            val sEnd = minOf(24 * 60, sStart + oDur)
+            val sEnd = sStart + oDur
             finalizedDayEvents.add(old.copy(startHour = sStart / 60, startMinute = sStart % 60, endHour = sEnd / 60, endMinute = sEnd % 60))
             sEnd
         }
@@ -633,6 +609,7 @@ fun TimetableGrid(
 ) {
     val days = listOf("27(토)", "28(일)", "29(월)")
     val density = LocalDensity.current
+    val coroutineScope = rememberCoroutineScope()
 
     var gridPopupInfo by remember { mutableStateOf<GridPopupInfo?>(null) }
     var dragPointer by remember { mutableStateOf<Offset?>(null) }
@@ -649,7 +626,7 @@ fun TimetableGrid(
 
         if (currentMode == "MOVE" && activeEvent != null && pPtr != null && dOffset != null) {
             val visualY = pPtr.y - verticalScrollState.value
-            if (visualY > gridHeightPx + 50f) {
+            if (visualY > gridHeightPx + 600f) {
                 PreviewResult(events.filter { it.id != activeEvent.id }, null, null, false)
             } else {
                 calculateLivePreview(events, activeEvent, pPtr, dOffset, hHPx, wPx, isExternalDrag = false, isInsideGrid = true)
@@ -702,13 +679,17 @@ fun TimetableGrid(
                 val localX = externalDragPos.x - gridGlobalX + horizontalScrollState.value
                 val localY = externalDragPos.y - gridGlobalY + verticalScrollState.value
                 val dayIndex = (localX / wPx).toInt().coerceIn(0, 2)
-                val exactStartMins = ((localY - hHPx / 2f) / (hHPx / 60f)).toInt()
 
-                val nearestHourMins = (exactStartMins / 60f).roundToInt() * 60
-                val isMagneticSnap = abs(exactStartMins - nearestHourMins) <= 18
-                val finalStartMins = if (isMagneticSnap) nearestHourMins.coerceIn(0, 24 * 60 - 60) else exactStartMins.coerceIn(0, 24 * 60 - 60)
+                // 외부 드래그 시 패딩을 고려하여 0시를 정확히 맞춤
+                val exactStartMins = ((localY - hHPx) / (hHPx / 60f)).toInt()
 
-                val finalizedEvents = finalizeDropWithPush(events, externalDragEvent, finalStartMins, dayIndex)
+                // 🔥 v0.52: 드롭 시 1시간(60분) 단위로 강제 스냅!!
+                val finalStartMins = (exactStartMins / 60f).roundToInt() * 60
+
+                val duration = (externalDragEvent.endHour * 60 + externalDragEvent.endMinute) - (externalDragEvent.startHour * 60 + externalDragEvent.startMinute)
+                val clampedStartMins = finalStartMins.coerceIn(0, 24 * 60 - duration)
+
+                val finalizedEvents = finalizeDropWithPush(events, externalDragEvent, clampedStartMins, dayIndex)
                 onExternalDrop(finalizedEvents, externalDragEvent.id)
             } else {
                 onExternalCancel()
@@ -729,19 +710,20 @@ fun TimetableGrid(
                     .verticalScroll(verticalScrollState)
             ) {
                 Column(modifier = Modifier.width(40.dp)) {
+                    Spacer(modifier = Modifier.height(hourHeight / 2f)) // 상단 30분 패딩
                     (0..24).toList().forEach { hour -> Text(text = "$hour", fontSize = 14.sp, color = Color.Gray, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().height(hourHeight).padding(top = 8.dp)) }
                 }
 
                 Box(
                     modifier = Modifier
-                        .width(120.dp * 3).height(hourHeight * 24)
+                        .width(120.dp * 3).height(hourHeight * 25f) // 총 도화지 25시간 길이
                         .horizontalScroll(horizontalScrollState)
                         .pointerInput(currentMode, activeEvent) {
                             if (currentMode != "NORMAL" && activeEvent != null) {
                                 detectDragGestures(
                                     onDragStart = { offset ->
                                         val left = with(density) { (activeEvent.dayIndex * 120).dp.toPx() }
-                                        val top = with(density) { ((activeEvent.startHour * 60 + activeEvent.startMinute) / 60f * hourHeight.value).dp.toPx() }
+                                        val top = with(density) { ((activeEvent.startHour * 60 + activeEvent.startMinute) / 60f * hourHeight.value + hourHeight.value / 2f).dp.toPx() }
                                         val right = left + with(density) { 120.dp.toPx() }
                                         val bottom = top + with(density) { (((activeEvent.endHour * 60 + activeEvent.endMinute) - (activeEvent.startHour * 60 + activeEvent.startMinute)) / 60f * hourHeight.value).dp.toPx() }
 
@@ -765,30 +747,80 @@ fun TimetableGrid(
                                         val dOffset = dragTouchOffset
                                         val sType = stretchType
 
-                                        // 🔥 v0.35 핵심 복구: pResult 검사를 없애서 오류 없이 100% 저장되도록 되돌림!
                                         if (pPtr != null && activeEvent != null) {
                                             val hHPx = with(density) { hourHeight.toPx() }
                                             if (currentMode == "MOVE" && dOffset != null) {
                                                 val visualY = pPtr.y - verticalScrollState.value
-                                                if (visualY > gridHeightPx + 50f) {
+                                                if (visualY > gridHeightPx + 600f) {
                                                     onEventUnassigned(activeEvent)
                                                 } else {
                                                     val cWPx = with(density) { 120.dp.toPx() }
                                                     val finalHoverDayIndex = (pPtr.x / cWPx).toInt().coerceIn(0, 2)
-                                                    val exactStartMins = ((pPtr.y - dOffset.y) / (hHPx / 60f)).toInt()
+                                                    val exactStartMins = ((pPtr.y - dOffset.y - hHPx / 2f) / (hHPx / 60f)).toInt()
                                                     val duration = (activeEvent.endHour * 60 + activeEvent.endMinute) - (activeEvent.startHour * 60 + activeEvent.startMinute)
 
-                                                    val nearestHourMins = (exactStartMins / 60f).roundToInt() * 60
-                                                    val isMagneticSnap = abs(exactStartMins - nearestHourMins) <= 18
-                                                    val finalStartMins = if (isMagneticSnap) nearestHourMins else exactStartMins
-
+                                                    // 🔥 v0.52: 내부 이동 모드 드롭 시 무조건 1시간(60분) 스냅 강제!
+                                                    val finalStartMins = (exactStartMins / 60f).roundToInt() * 60
                                                     val roundedStartMins = finalStartMins.coerceIn(0, 24 * 60 - duration)
+
                                                     val finalizedEvents = finalizeDropWithPush(events, activeEvent, roundedStartMins, finalHoverDayIndex)
                                                     onEventActionComplete(finalizedEvents)
                                                 }
                                             } else if (currentMode == "STRETCH" && sType != null) {
                                                 val finalRes = calculateStretchPreview(events, activeEvent, pPtr.y, sType, hHPx)
-                                                onEventActionComplete(finalRes.events)
+                                                var resultingEvents = finalRes.events
+                                                val stretchedEvent = resultingEvents.find { it.id == activeEvent.id }
+
+                                                var isExtendedToNextDay = false
+                                                var isExtendedToPrevDay = false
+
+                                                if (stretchedEvent != null) {
+                                                    if (sType == "BOTTOM") {
+                                                        val endMins = stretchedEvent.endHour * 60 + stretchedEvent.endMinute
+                                                        if (endMins > 24 * 60) {
+                                                            val nextDayEvent = stretchedEvent.copy(endHour = 25, endMinute = 0)
+                                                            resultingEvents = resultingEvents.filter { it.id != activeEvent.id } + nextDayEvent
+                                                            isExtendedToNextDay = true
+                                                            coroutineScope.launch {
+                                                                delay(100)
+                                                                verticalScrollState.animateScrollTo(0)
+                                                            }
+                                                        }
+                                                    } else if (sType == "TOP") {
+                                                        val startMins = stretchedEvent.startHour * 60 + stretchedEvent.startMinute
+                                                        if (startMins < 0 && activeEvent.dayIndex > 0) {
+                                                            val prevDayEvent = stretchedEvent.copy(startHour = -1, startMinute = 0)
+                                                            resultingEvents = resultingEvents.filter { it.id != activeEvent.id } + prevDayEvent
+                                                            isExtendedToPrevDay = true
+                                                            coroutineScope.launch {
+                                                                delay(100)
+                                                                verticalScrollState.animateScrollTo(verticalScrollState.maxValue)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                resultingEvents = resultingEvents.map { ev ->
+                                                    val evStartMins = ev.startHour * 60 + ev.startMinute
+                                                    if (evStartMins < 0 && ev.dayIndex > 0 && ev.id != activeEvent.id) {
+                                                        val shiftEndMins = ev.endHour * 60 + ev.endMinute + 24 * 60
+                                                        ev.copy(
+                                                            dayIndex = ev.dayIndex - 1,
+                                                            startHour = (evStartMins + 24 * 60) / 60,
+                                                            startMinute = (evStartMins + 24 * 60) % 60,
+                                                            endHour = shiftEndMins / 60,
+                                                            endMinute = shiftEndMins % 60
+                                                        )
+                                                    } else {
+                                                        ev
+                                                    }
+                                                }
+
+                                                onEventActionComplete(resultingEvents)
+
+                                                if (isExtendedToNextDay || isExtendedToPrevDay) {
+                                                    onActionCancel()
+                                                }
                                             }
                                         } else onEventActionInvalid()
 
@@ -804,24 +836,71 @@ fun TimetableGrid(
                         .pointerInput(hourHeight, currentMode) {
                             detectTapGestures(
                                 onTap = {
-                                    if (currentMode != "NORMAL") onActionCancel()
-                                    gridPopupInfo = null
+                                    if (currentMode != "NORMAL") {
+                                        // Do nothing. Use 'Done' button to cancel mode.
+                                    } else {
+                                        gridPopupInfo = null
+                                    }
                                 },
                                 onLongPress = { offset ->
                                     if (currentMode == "NORMAL") {
                                         onEventDeselect()
                                         val dIdx = (offset.x / with(density) { 120.dp.toPx() }).toInt().coerceIn(0, 2)
-                                        val h = ((offset.y / (with(density) { hourHeight.toPx() } / 60f)).toInt() / 60).coerceIn(0, 23)
-                                        gridPopupInfo = GridPopupInfo(IntOffset((offset.x - with(density){40.dp.toPx()}).toInt(), (offset.y - with(density){60.dp.toPx()}).toInt()), dIdx, h, 0)
+                                        val h = ((offset.y - with(density){hourHeight.toPx() / 2f}) / (with(density) { hourHeight.toPx() } / 60f)).toInt() / 60
+                                        gridPopupInfo = GridPopupInfo(IntOffset((offset.x - with(density){40.dp.toPx()}).toInt(), (offset.y - with(density){60.dp.toPx()}).toInt()), dIdx, h.coerceIn(0, 23), 0)
                                     }
                                 }
                             )
                         }
                 ) {
-                    Row { days.forEachIndexed { _, _ -> Box(modifier = Modifier.width(120.dp).fillMaxHeight()) { Column { (0..24).toList().forEach { _ -> Box(modifier = Modifier.height(hourHeight).fillMaxWidth()) { HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f), thickness = 1.dp) } } } } } }
+                    Row {
+                        days.forEachIndexed { _, _ ->
+                            Box(modifier = Modifier.width(120.dp).fillMaxHeight()) {
+                                Column {
+                                    Spacer(modifier = Modifier.height(hourHeight / 2f))
+                                    (0..24).toList().forEach { _ -> Box(modifier = Modifier.height(hourHeight).fillMaxWidth()) { HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f), thickness = 1.dp) } }
+                                }
+                            }
+                        }
+                    }
 
-                    displayEvents.forEach { event ->
-                        key(event.id) {
+                    val visuallySplitEvents = displayEvents.flatMap { event ->
+                        val startMins = event.startHour * 60 + event.startMinute
+                        val endMins = event.endHour * 60 + event.endMinute
+
+                        val isStretchingBottom = currentMode == "STRETCH" && stretchType == "BOTTOM" && event.id == activeEvent?.id && endMins > 24 * 60
+                        val isStretchingTop = currentMode == "STRETCH" && stretchType == "TOP" && event.id == activeEvent?.id && startMins < 0
+
+                        if (endMins > 24 * 60 && !isStretchingBottom) {
+                            val part1 = event.copy(endHour = 24, endMinute = 0)
+                            val nextDayIndex = minOf(event.dayIndex + 1, 2)
+                            val part2 = event.copy(
+                                startHour = 0, startMinute = 0,
+                                endHour = (endMins - 24 * 60) / 60,
+                                endMinute = (endMins - 24 * 60) % 60,
+                                dayIndex = nextDayIndex
+                            )
+                            listOf(Pair(part1, "part1"), Pair(part2, "part2"))
+                        } else if (startMins < 0 && !isStretchingTop) {
+                            val actualStartMins = 24 * 60 + startMins
+                            val part1 = event.copy(
+                                dayIndex = maxOf(event.dayIndex - 1, 0),
+                                startHour = actualStartMins / 60,
+                                startMinute = actualStartMins % 60,
+                                endHour = 24,
+                                endMinute = 0
+                            )
+                            val part2 = event.copy(
+                                startHour = 0, startMinute = 0
+                            )
+                            listOf(Pair(part1, "part1"), Pair(part2, "part2"))
+                        } else {
+                            listOf(Pair(event, "main"))
+                        }
+                    }
+
+                    visuallySplitEvents.forEach { (event, partSuffix) ->
+                        key("${event.id}_$partSuffix") {
                             val isInternalActive = currentMode != "NORMAL" && event.id == activeEvent?.id
                             val isExternalActive = isExternalDragging && event.id == externalDragEvent?.id
                             val isActiveTarget = isInternalActive || isExternalActive
@@ -830,8 +909,10 @@ fun TimetableGrid(
                             val blockAlpha = if (isDimmed) 0.85f else 1.0f
 
                             val isMagneticSnap = if (isInternalActive && currentMode == "MOVE") previewResult?.isMagneticSnap ?: false else if (isExternalActive) previewResult?.isMagneticSnap ?: false else false
+
+                            val isNextDayPart = partSuffix == "part2" && event.id == activeEvent?.id
                             val freeX = if (isInternalActive && currentMode == "MOVE") previewResult?.freeX else if (isExternalActive) previewResult?.freeX else null
-                            val freeY = if (isInternalActive && currentMode == "MOVE") previewResult?.freeY else if (isExternalActive) previewResult?.freeY else null
+                            val freeY = if (isInternalActive && currentMode == "MOVE" && !isNextDayPart) previewResult?.freeY else if (isExternalActive) previewResult?.freeY else null
 
                             EventBlockItem(
                                 event = event, hourHeightDp = hourHeight.value,
@@ -839,11 +920,18 @@ fun TimetableGrid(
                                 isMagneticSnap = isMagneticSnap, freeX = freeX, freeY = freeY, alpha = blockAlpha,
                                 onLongClick = {
                                     gridPopupInfo = null
-                                    onEventLongClick(it)
+                                    val originalEvent = events.find { it.id == event.id } ?: event
+                                    onEventLongClick(originalEvent)
                                 },
                                 onDeselect = onEventDeselect,
-                                onClick = { onEventClick(event) },
-                                onCopy = onEventCopy, onMoveStart = onEventMoveStart, onStretchStart = onEventStretchStart, onActionCancel = onActionCancel,
+                                onClick = {
+                                    val originalEvent = events.find { it.id == event.id } ?: event
+                                    onEventClick(originalEvent)
+                                },
+                                onCopy = { onEventCopy(events.find { it.id == event.id } ?: event) },
+                                onMoveStart = { onEventMoveStart(events.find { it.id == event.id } ?: event) },
+                                onStretchStart = { onEventStretchStart(events.find { it.id == event.id } ?: event) },
+                                onActionCancel = onActionCancel,
                                 onEventUnassigned = { onEventUnassigned(event) }
                             )
                         }
@@ -865,7 +953,7 @@ fun TimetableGrid(
 
             val pPtr = dragPointer
             val dOffset = dragTouchOffset
-            val isInternalOutside = currentMode == "MOVE" && pPtr != null && dOffset != null && activeEvent != null && (pPtr.y - verticalScrollState.value > gridHeightPx + 50f)
+            val isInternalOutside = currentMode == "MOVE" && pPtr != null && dOffset != null && activeEvent != null && (pPtr.y - verticalScrollState.value > gridHeightPx + 600f)
 
             if (isInternalOutside && activeEvent != null) {
                 val localX = pPtr.x - horizontalScrollState.value - dOffset.x
@@ -908,7 +996,7 @@ fun EventBlockItem(
     val minuteHeightDp = hourHeightDp / 60f
 
     val gridX = (event.dayIndex * 120).dp
-    val gridY = ((event.startHour * 60 + event.startMinute) * minuteHeightDp).dp
+    val gridY = ((event.startHour * 60 + event.startMinute) * minuteHeightDp).dp + (hourHeightDp / 2f).dp
     val calculatedHeight = (((event.endHour * 60 + event.endMinute) - (event.startHour * 60 + event.startMinute)) * minuteHeightDp)
     val safeBlockHeightDp = maxOf(28f, calculatedHeight).dp
 
@@ -948,7 +1036,7 @@ fun EventBlockItem(
             .pointerInput(event, currentMode) {
                 detectTapGestures(
                     onTap = {
-                        if (currentMode == "NORMAL") onClick() else onActionCancel()
+                        if (currentMode == "NORMAL") onClick()
                     },
                     onLongPress = { offset ->
                         if (currentMode == "NORMAL") {
@@ -975,8 +1063,31 @@ fun EventBlockItem(
         }
 
         if (isStretching) {
-            Box(modifier = Modifier.align(Alignment.TopCenter).padding(top = 2.dp).width(30.dp).height(4.dp).background(Color.White.copy(alpha=0.8f), CircleShape))
-            Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp).width(30.dp).height(4.dp).background(Color.White.copy(alpha=0.8f), CircleShape))
+            val startMins = event.startHour * 60 + event.startMinute
+            val endMins = event.endHour * 60 + event.endMinute
+
+            if (endMins > 24 * 60) {
+                Column(
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("다음 날로\n확장", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp, textAlign = TextAlign.Center)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Box(modifier = Modifier.width(30.dp).height(4.dp).background(Color.White, CircleShape))
+                }
+            } else if (startMins < 0) {
+                Column(
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(modifier = Modifier.width(30.dp).height(4.dp).background(Color.White, CircleShape))
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("이전 날로\n확장", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp, textAlign = TextAlign.Center)
+                }
+            } else {
+                Box(modifier = Modifier.align(Alignment.TopCenter).padding(top = 2.dp).width(30.dp).height(4.dp).background(Color.White.copy(alpha=0.8f), CircleShape))
+                Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp).width(30.dp).height(4.dp).background(Color.White.copy(alpha=0.8f), CircleShape))
+            }
         }
 
         if (isSelected && currentMode == "NORMAL") {
@@ -999,18 +1110,30 @@ fun EventBlockItem(
 // ==========================================
 @Composable
 fun UnassignedEventBlock(
-    event: EventData, modifier: Modifier = Modifier, isBeingDragged: Boolean, onClick: () -> Unit = {}
+    event: EventData, modifier: Modifier = Modifier, isBeingDragged: Boolean,
+    onDragStart: (Offset) -> Unit = {}, onDrag: (Offset) -> Unit = {}, onDragEnd: () -> Unit = {}, onClick: () -> Unit = {}
 ) {
     val itemWidth by animateDpAsState(targetValue = if (isBeingDragged) 0.dp else 130.dp, animationSpec = tween(300), label = "w")
     val itemPadding by animateDpAsState(targetValue = if (isBeingDragged) 0.dp else 8.dp, animationSpec = tween(300), label = "p")
     val itemAlpha by animateFloatAsState(targetValue = if (isBeingDragged) 0f else 1f, animationSpec = tween(150), label = "a")
 
+    var itemGlobalPos by remember { mutableStateOf(Offset.Zero) }
+
     Box(modifier = modifier
+        .onGloballyPositioned { itemGlobalPos = it.positionInWindow() }
         .width(itemWidth)
         .fillMaxHeight()
         .padding(end = itemPadding)
         .clip(RoundedCornerShape(8.dp))
         .alpha(itemAlpha)
+        .pointerInput(Unit) {
+            detectDragGesturesAfterLongPress(
+                onDragStart = { localOffset -> onDragStart(itemGlobalPos + localOffset) },
+                onDrag = { change, dragAmount -> change.consume(); onDrag(dragAmount) },
+                onDragEnd = { onDragEnd() },
+                onDragCancel = { onDragEnd() }
+            )
+        }
         .clickable { onClick() }
     ) {
         Box(modifier = Modifier.width(122.dp).fillMaxHeight().background(event.color).padding(12.dp)) {
@@ -1031,7 +1154,7 @@ fun AddEventButton(onClick: () -> Unit) {
 }
 
 // ==========================================
-// 🔥 6. 일정 편집/생성 다이얼로그 (오버레이)
+// 6. 일정 편집/생성 다이얼로그 (오버레이)
 // ==========================================
 @Composable
 fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (EventData) -> Unit) {
@@ -1058,13 +1181,13 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
     val durH = (durationMins / 60).toString()
     val durM = String.format("%02d", durationMins % 60)
 
-    val displayEndMins = minOf(endMins, 24 * 60)
+    val displayEndMins = endMins
     val endH = String.format("%02d", displayEndMins / 60)
     val endM = String.format("%02d", displayEndMins % 60)
 
     val hourOptions = (0..23).map { String.format("%02d", it) }
-    val endHourOptions = (0..24).map { String.format("%02d", it) }
-    val durHourOptions = (0..24).map { it.toString() }
+    val endHourOptions = (0..36).map { String.format("%02d", it) }
+    val durHourOptions = (0..36).map { it.toString() }
     val minuteOptions = (0..55 step 5).map { String.format("%02d", it) }
 
     val colorPalette = listOf(
@@ -1200,7 +1323,7 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
                 }
                 Box(modifier = Modifier.weight(1f).background(Color(0xFFE0E0E0), RoundedCornerShape(12.dp)).clickable {
                     val finalDesc = listOf(location.trim(), memo.trim()).filter { it.isNotEmpty() }.joinToString("\n")
-                    val clampedEnd = minOf(endMins, 24 * 60)
+                    val clampedEnd = endMins
                     val finalEvent = initialEvent.copy(
                         title = title.ifEmpty { "새 일정" }, description = finalDesc,
                         dayIndex = if(initialEvent.dayIndex == -1) -1 else dayIndex,
