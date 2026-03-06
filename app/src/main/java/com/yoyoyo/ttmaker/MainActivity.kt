@@ -467,6 +467,7 @@ fun calculateLivePreview(events: List<EventData>, movingEvent: EventData, pointe
         previewDayEvents.addAll(dayOthers)
     }
 
+    // 🔥 UUID를 유지하여 이벤트가 끊기지 않게 함
     val previewMoving = movingEvent.copy(startHour = clampedStartMins / 60, startMinute = clampedStartMins % 60, endHour = clampedEndMins / 60, endMinute = clampedEndMins % 60, dayIndex = hoverDayIndex)
     previewDayEvents.add(previewMoving)
 
@@ -475,23 +476,24 @@ fun calculateLivePreview(events: List<EventData>, movingEvent: EventData, pointe
     return PreviewResult(finalEvents, freeX, freeY, isMagneticSnap)
 }
 
-// 🔥 v0.52c: 분할 블록이 0분까지 압축되도록 허용
-fun calculateStretchPreview(events: List<EventData>, activeEvent: EventData, pointerY: Float, stretchType: String, hourHeightPx: Float, dragHitPart: Int = 3): PreviewResult {
+// 🔥 v0.52b: 분할 블록 STRETCH 오작동 완벽 해결
+fun calculateStretchPreview(
+    events: List<EventData>, activeEvent: EventData, pointerY: Float, stretchType: String, hourHeightPx: Float,
+    dragHitPart: Int // 🔥 어떤 조각(part1=1, part2=2)을 터치했는지 판별값 추가
+): PreviewResult {
     val minuteHeightPx = hourHeightPx / 60f
     val topPaddingPx = hourHeightPx / 2f
     val pointerMins = ((pointerY - topPaddingPx) / minuteHeightPx).toInt()
-    val snappedMins = ((pointerMins / snapIntervalMins.toFloat()).roundToInt() * snapIntervalMins).coerceIn(-24 * 60, 48 * 60)
+    val snappedMins = ((pointerMins / snapIntervalMins.toFloat()).roundToInt() * snapIntervalMins)
 
     val oldStart = activeEvent.startHour * 60 + activeEvent.startMinute
     val oldEnd = activeEvent.endHour * 60 + activeEvent.endMinute
 
-    // 🔥 "다음 날로 확장된 블록"과 "이전 날로 확장된 블록"을 모두 완벽하게 식별
-    val isOriginalSplitNext = oldEnd > 24 * 60
-    val isOriginalSplitPrev = oldStart < 0
-    val isOriginalSplit = isOriginalSplitNext || isOriginalSplitPrev
+    // 원본이 분할된 블록인지 확인
+    val isOriginalSplit = oldEnd > 24 * 60
 
     val others = events.filter { it.id != activeEvent.id }
-    val dayOthers = events.filter { it.dayIndex == activeEvent.dayIndex }
+    val dayOthers = others.filter { it.dayIndex == activeEvent.dayIndex }
     val previewDayEvents = mutableListOf<EventData>()
 
     var newStart = oldStart
@@ -502,22 +504,16 @@ fun calculateStretchPreview(events: List<EventData>, activeEvent: EventData, poi
         val unaffected = dayOthers.filter { (it.endHour * 60 + it.endMinute) > oldStart }
         val limitByBlocks = blocksAbove.sumOf { (it.endHour * 60 + it.endMinute) - (it.startHour * 60 + it.startMinute) }
 
-        val absoluteMin = if (activeEvent.dayIndex > 0 && !isOriginalSplit) -30
-        else if (isOriginalSplitPrev) -24 * 60
-        else 0
-        val limitStart = if (isOriginalSplitNext && dragHitPart == 2) maxOf(limitByBlocks, 24 * 60)
-        else if (isOriginalSplitPrev && dragHitPart == 2) maxOf(limitByBlocks, 0)
-        else limitByBlocks
+        // 🔥 이미 분할된 블록은 더 이상 '이전 날'로 확장할 수 없음 (무조건 0시 방어)
+        val absoluteMin = if (activeEvent.dayIndex > 0 && !isOriginalSplit) -30 else 0
 
-        // 🔥 분할된 블록(part1)일 때만 최소 15분 제한 무시, 0분(24:00 또는 0:00)까지 당길 수 있도록 허용
-        val maxStartAllowed = if (isOriginalSplitNext && dragHitPart == 1) 24 * 60
-        else if (isOriginalSplitPrev && dragHitPart == 1) 0
-        else oldEnd - snapIntervalMins
+        // part2를 위로 당기더라도 다음날 0:00(24:00) 밑으로는 못 내려가게 방어
+        val limitStart = if (isOriginalSplit && dragHitPart == 2) maxOf(limitByBlocks, 24 * 60) else limitByBlocks
 
         if (pointerMins < 0 && activeEvent.dayIndex > 0 && !isOriginalSplit) {
             newStart = maxOf(absoluteMin, pointerMins)
         } else {
-            newStart = maxOf(limitStart, minOf(snappedMins.coerceAtLeast(absoluteMin), maxStartAllowed))
+            newStart = maxOf(limitStart, minOf(snappedMins.coerceAtLeast(absoluteMin), oldEnd - snapIntervalMins))
         }
 
         blocksAbove.fold(newStart) { boundary, old ->
@@ -532,21 +528,18 @@ fun calculateStretchPreview(events: List<EventData>, activeEvent: EventData, poi
         val blocksBelow = dayOthers.filter { (it.startHour * 60 + it.startMinute) >= oldEnd }.sortedBy { it.startHour * 60 + it.startMinute }
         val unaffected = dayOthers.filter { (it.startHour * 60 + it.startMinute) < oldEnd }
 
-        val maxLimit = if (isOriginalSplitNext) 48 * 60 else 24 * 60
+        // 분할 블록은 최대 48시(A+1일 24시)까지 연산 허용
+        val maxLimit = if (isOriginalSplit) 48 * 60 else 24 * 60
         val maxEndAllowed = maxLimit - blocksBelow.sumOf { (it.endHour * 60 + it.endMinute) - (it.startHour * 60 + it.startMinute) }
-        val limitEnd = if (isOriginalSplitNext && dragHitPart == 1) minOf(maxEndAllowed, 24 * 60)
-        else if (isOriginalSplitPrev && dragHitPart == 1) minOf(maxEndAllowed, 0)
-        else maxEndAllowed
 
-        // 🔥 분할된 블록(part2)일 때만 최소 15분 제한 무시, 0분(0:00 또는 24:00)까지 당길 수 있도록 허용
-        val minEndAllowed = if (isOriginalSplitNext && dragHitPart == 2) 24 * 60
-        else if (isOriginalSplitPrev && dragHitPart == 2) 0
-        else oldStart + snapIntervalMins
+        // part1을 아래로 당기더라도 A일 자정(24:00)을 넘어가지 못하게 방어
+        val limitEnd = if (isOriginalSplit && dragHitPart == 1) minOf(maxEndAllowed, 24 * 60) else maxEndAllowed
 
+        // 🔥 이미 분할된 블록은 더 이상 '다음 날'로 확장할 수 없음 (+30분 점프 불가)
         if (pointerMins > 24 * 60 && activeEvent.dayIndex < 2 && !isOriginalSplit) {
             newEnd = minOf(pointerMins, 24 * 60 + 30)
         } else {
-            newEnd = minOf(limitEnd, maxOf(snappedMins.coerceAtMost(maxLimit), minEndAllowed))
+            newEnd = minOf(limitEnd, maxOf(snappedMins.coerceAtMost(maxLimit), oldStart + snapIntervalMins))
         }
 
         blocksBelow.fold(newEnd) { boundary, old ->
@@ -573,7 +566,7 @@ fun finalizeDropWithPush(events: List<EventData>, movingEvent: EventData, finalS
     val movingCenter = finalStartMins + duration / 2.0f
 
     val others = events.filter { it.id != movingEvent.id }
-    val dayOthers = events.filter { it.dayIndex == dayIndex }
+    val dayOthers = others.filter { it.dayIndex == dayIndex }
 
     val hasOverlap = dayOthers.any { maxOf(finalStartMins, it.startHour * 60 + it.startMinute) < minOf(snappedEndMins, it.endHour * 60 + it.endMinute) }
     val finalizedDayEvents = mutableListOf<EventData>()
@@ -643,10 +636,12 @@ fun TimetableGrid(
     var dragTouchOffset by remember { mutableStateOf<Offset?>(null) }
     var stretchType by remember { mutableStateOf<String?>(null) }
 
+    // 🔥 v0.52b: 팝업 중복 방지용 선택된 파트 식별자 저장
     var selectedPartSuffix by remember { mutableStateOf<String?>(null) }
+    // 🔥 v0.52b: 어느 조각을 터치했는지 기억 (1=part1, 2=part2, 3=main)
     var dragHitPart by remember { mutableIntStateOf(0) }
 
-    val previewResult = remember(events, currentMode, activeEvent, dragPointer, dragTouchOffset, stretchType, isExternalDragging, externalDragEvent, externalDragPos, dragHitPart, verticalScrollState.value, horizontalScrollState.value, gridGlobalX, gridGlobalY, gridHeightPx, hourHeight.value) {
+    val previewResult = remember(events, currentMode, activeEvent, dragPointer, dragTouchOffset, stretchType, isExternalDragging, externalDragEvent, externalDragPos, verticalScrollState.value, horizontalScrollState.value, gridGlobalX, gridGlobalY, gridHeightPx, dragHitPart, hourHeight.value) {
         val pPtr = dragPointer
         val dOffset = dragTouchOffset
         val sType = stretchType
@@ -662,13 +657,9 @@ fun TimetableGrid(
                 calculateLivePreview(events, activeEvent, pPtr, dOffset, hHPx, wPx, isExternalDrag = false, isInsideGrid = true)
             }
         } else if (currentMode == "STRETCH" && activeEvent != null && pPtr != null && sType != null) {
-            // 🔥 양쪽 분할 모두 Y 좌표 완벽 보정
-            val isSplitNext = activeEvent.endHour * 60 + activeEvent.endMinute > 24 * 60
-            val isSplitPrev = activeEvent.startHour * 60 + activeEvent.startMinute < 0
-            val mappedY = if (isSplitNext && dragHitPart == 2) pPtr.y + 24 * 60 * (hHPx / 60f)
-            else if (isSplitPrev && dragHitPart == 1) pPtr.y - 24 * 60 * (hHPx / 60f)
-            else pPtr.y
-
+            // 🔥 v0.52b: part2(아랫부분)을 터치했다면, 로직이 이어지도록 Y좌표를 24시간 밑으로 가상 투영함
+            val isSplit = activeEvent.endHour * 60 + activeEvent.endMinute > 24 * 60
+            val mappedY = if (isSplit && dragHitPart == 2) pPtr.y + 24 * 60 * (hHPx / 60f) else pPtr.y
             calculateStretchPreview(events, activeEvent, mappedY, sType, hHPx, dragHitPart)
         } else if (isExternalDragging && externalDragEvent != null && ePos != null) {
             val visualY = ePos.y - gridGlobalY
@@ -719,6 +710,7 @@ fun TimetableGrid(
                 val exactStartMins = ((localY - hHPx / 2f) / (hHPx / 60f)).toInt()
 
                 val finalStartMins = (exactStartMins / 60f).roundToInt() * 60
+
                 val duration = (externalDragEvent.endHour * 60 + externalDragEvent.endMinute) - (externalDragEvent.startHour * 60 + externalDragEvent.startMinute)
                 val clampedStartMins = finalStartMins.coerceIn(0, 24 * 60 - duration)
 
@@ -757,66 +749,39 @@ fun TimetableGrid(
                                     onDragStart = { offset ->
                                         val wPx = with(density) { 120.dp.toPx() }
                                         val hPxPerMin = with(density) { hourHeight.toPx() / 60f }
-                                        val topPaddingPx = with(density) { (hourHeight.value / 2f).dp.toPx() }
+                                        val hHPx = with(density) { hourHeight.toPx() }
+                                        val topPaddingPx = hHPx / 2f
 
                                         val startMins = activeEvent.startHour * 60 + activeEvent.startMinute
                                         val endMins = activeEvent.endHour * 60 + activeEvent.endMinute
+                                        val isSplit = endMins > 24 * 60
 
-                                        // 🔥 양방향 분할 인식
-                                        val isSplitNext = endMins > 24 * 60
-                                        val isSplitPrev = startMins < 0
-                                        val isSplit = isSplitNext || isSplitPrev
+                                        val left1 = activeEvent.dayIndex * wPx
+                                        val top1 = startMins * hPxPerMin + topPaddingPx
+                                        val bottom1 = minOf(endMins, 24 * 60) * hPxPerMin + topPaddingPx
+                                        val right1 = left1 + wPx
 
-                                        var hit1 = false
-                                        var hit2 = false
-                                        var top1 = 0f; var bottom1 = 0f; var left1 = 0f; var right1 = 0f
-                                        var top2 = 0f; var bottom2 = 0f; var left2 = 0f; var right2 = 0f
                                         val touchBuffer = 40f
+                                        val hit1 = offset.x in (left1 - touchBuffer)..(right1 + touchBuffer) && offset.y in (top1 - touchBuffer)..(bottom1 + touchBuffer)
 
-                                        if (isSplitNext) {
-                                            left1 = activeEvent.dayIndex * wPx
-                                            top1 = startMins * hPxPerMin + topPaddingPx
-                                            bottom1 = 24 * 60 * hPxPerMin + topPaddingPx
-                                            right1 = left1 + wPx
-                                            hit1 = offset.x in (left1 - touchBuffer)..(right1 + touchBuffer) && offset.y in (top1 - touchBuffer)..(bottom1 + touchBuffer)
-
-                                            if (activeEvent.dayIndex < 2) {
-                                                left2 = (activeEvent.dayIndex + 1) * wPx
-                                                top2 = 0f * hPxPerMin + topPaddingPx
-                                                bottom2 = (endMins - 24 * 60) * hPxPerMin + topPaddingPx
-                                                right2 = left2 + wPx
-                                                hit2 = offset.x in (left2 - touchBuffer)..(right2 + touchBuffer) && offset.y in (top2 - touchBuffer)..(bottom2 + touchBuffer)
-                                            }
-                                        } else if (isSplitPrev) {
-                                            if (activeEvent.dayIndex > 0) {
-                                                left1 = (activeEvent.dayIndex - 1) * wPx
-                                                top1 = (24 * 60 + startMins) * hPxPerMin + topPaddingPx
-                                                bottom1 = 24 * 60 * hPxPerMin + topPaddingPx
-                                                right1 = left1 + wPx
-                                                hit1 = offset.x in (left1 - touchBuffer)..(right1 + touchBuffer) && offset.y in (top1 - touchBuffer)..(bottom1 + touchBuffer)
-                                            }
-
-                                            left2 = activeEvent.dayIndex * wPx
+                                        var hit2 = false
+                                        var top2 = 0f
+                                        var bottom2 = 0f
+                                        if (isSplit && activeEvent.dayIndex < 2) {
+                                            val left2 = (activeEvent.dayIndex + 1) * wPx
                                             top2 = 0f * hPxPerMin + topPaddingPx
-                                            bottom2 = endMins * hPxPerMin + topPaddingPx
-                                            right2 = left2 + wPx
+                                            bottom2 = (endMins - 24 * 60) * hPxPerMin + topPaddingPx
+                                            val right2 = left2 + wPx
                                             hit2 = offset.x in (left2 - touchBuffer)..(right2 + touchBuffer) && offset.y in (top2 - touchBuffer)..(bottom2 + touchBuffer)
-                                        } else {
-                                            left1 = activeEvent.dayIndex * wPx
-                                            top1 = startMins * hPxPerMin + topPaddingPx
-                                            bottom1 = endMins * hPxPerMin + topPaddingPx
-                                            right1 = left1 + wPx
-                                            hit1 = offset.x in (left1 - touchBuffer)..(right1 + touchBuffer) && offset.y in (top1 - touchBuffer)..(bottom1 + touchBuffer)
                                         }
 
                                         if (hit1 || hit2) {
+                                            // 🔥 겹치는 터치 영역에서 더 가까운 곳을 선택
                                             val actualHit = if (isSplit) {
-                                                if (hit2 && !hit1) 2
-                                                else if (hit1 && !hit2) 1
-                                                else {
-                                                    val center1 = (top1 + bottom1) / 2f
-                                                    val center2 = (top2 + bottom2) / 2f
-                                                    if (abs(offset.y - center2) < abs(offset.y - center1)) 2 else 1
+                                                if (hit2 && !hit1) 2 else if (hit1 && !hit2) 1 else {
+                                                    val dist1 = minOf(abs(offset.y - top1), abs(offset.y - bottom1))
+                                                    val dist2 = minOf(abs(offset.y - top2), abs(offset.y - bottom2))
+                                                    if (dist2 < dist1) 2 else 1
                                                 }
                                             } else 3
 
@@ -824,16 +789,10 @@ fun TimetableGrid(
                                             dragPointer = offset
 
                                             if (currentMode == "MOVE") {
-                                                val virtX = if (isSplitNext && actualHit == 2) offset.x - wPx
-                                                else if (isSplitPrev && actualHit == 1) offset.x + wPx
-                                                else offset.x
-                                                val virtY = if (isSplitNext && actualHit == 2) offset.y + 24 * 60 * hPxPerMin
-                                                else if (isSplitPrev && actualHit == 1) offset.y - 24 * 60 * hPxPerMin
-                                                else offset.y
-                                                val baseLeft = activeEvent.dayIndex * wPx
-                                                val baseTop = startMins * hPxPerMin + topPaddingPx
-                                                dragTouchOffset = Offset(virtX - baseLeft, virtY - baseTop)
+                                                // 분할 블록의 이동은 UI에서 이미 막혔으므로 일반 블록에서만 실행됨
+                                                dragTouchOffset = Offset(offset.x - left1, offset.y - top1)
                                             } else if (currentMode == "STRETCH") {
+                                                // 🔥 분할된 블록은 part1은 위로만(TOP), part2는 아래로만(BOTTOM) 당기도록 강제 고정!
                                                 if (isSplit) {
                                                     stretchType = if (actualHit == 1) "TOP" else "BOTTOM"
                                                 } else {
@@ -865,15 +824,8 @@ fun TimetableGrid(
                                                     onEventUnassigned(activeEvent)
                                                 } else {
                                                     val cWPx = with(density) { 120.dp.toPx() }
-                                                    val isSplitNext = activeEvent.endHour * 60 + activeEvent.endMinute > 24 * 60
-                                                    val isSplitPrev = activeEvent.startHour * 60 + activeEvent.startMinute < 0
-
-                                                    val virtX = if (isSplitNext && hitPart == 2) pPtr.x - cWPx else if (isSplitPrev && hitPart == 1) pPtr.x + cWPx else pPtr.x
-                                                    val virtY = if (isSplitNext && hitPart == 2) pPtr.y + 24 * 60 * hPxPerMin else if (isSplitPrev && hitPart == 1) pPtr.y - 24 * 60 * hPxPerMin else pPtr.y
-                                                    val virtPtr = Offset(virtX, virtY)
-
-                                                    val finalHoverDayIndex = (virtPtr.x / cWPx).toInt().coerceIn(0, 2)
-                                                    val exactStartMins = ((virtPtr.y - dOffset.y - hHPx / 2f) / hPxPerMin).toInt()
+                                                    val finalHoverDayIndex = (pPtr.x / cWPx).toInt().coerceIn(0, 2)
+                                                    val exactStartMins = ((pPtr.y - dOffset.y - hHPx / 2f) / hPxPerMin).toInt()
                                                     val duration = (activeEvent.endHour * 60 + activeEvent.endMinute) - (activeEvent.startHour * 60 + activeEvent.startMinute)
 
                                                     val finalStartMins = (exactStartMins / 60f).roundToInt() * 60
@@ -883,11 +835,8 @@ fun TimetableGrid(
                                                     onEventActionComplete(finalizedEvents)
                                                 }
                                             } else if (currentMode == "STRETCH" && sType != null) {
-                                                val isSplitNext = activeEvent.endHour * 60 + activeEvent.endMinute > 24 * 60
-                                                val isSplitPrev = activeEvent.startHour * 60 + activeEvent.startMinute < 0
-                                                val mappedY = if (isSplitNext && hitPart == 2) pPtr.y + 24 * 60 * hPxPerMin
-                                                else if (isSplitPrev && hitPart == 1) pPtr.y - 24 * 60 * hPxPerMin
-                                                else pPtr.y
+                                                val isSplit = activeEvent.endHour * 60 + activeEvent.endMinute > 24 * 60
+                                                val mappedY = if (isSplit && hitPart == 2) pPtr.y + 24 * 60 * hPxPerMin else pPtr.y
 
                                                 val finalRes = calculateStretchPreview(events, activeEvent, mappedY, sType, hHPx, hitPart)
                                                 var resultingEvents = finalRes.events
@@ -897,11 +846,11 @@ fun TimetableGrid(
                                                 var isExtendedToPrevDay = false
 
                                                 if (stretchedEvent != null) {
+                                                    val isOriginalSplit = activeEvent.endHour * 60 + activeEvent.endMinute > 24 * 60
                                                     val startMins = stretchedEvent.startHour * 60 + stretchedEvent.startMinute
                                                     val endMins = stretchedEvent.endHour * 60 + stretchedEvent.endMinute
 
-                                                    if (!isSplitNext && !isSplitPrev) {
-                                                        // 🔥 일반 블록의 확장 로직
+                                                    if (!isOriginalSplit) {
                                                         if (sType == "BOTTOM" && endMins > 24 * 60) {
                                                             val nextDayEvent = stretchedEvent.copy(endHour = 25, endMinute = 0)
                                                             resultingEvents = resultingEvents.filter { it.id != activeEvent.id } + nextDayEvent
@@ -914,58 +863,37 @@ fun TimetableGrid(
                                                             coroutineScope.launch { delay(100); verticalScrollState.animateScrollTo(verticalScrollState.maxValue) }
                                                         }
                                                     } else {
-                                                        // 🔥 분할된 블록이 0분으로 압축(소멸)되었을 때의 병합 및 스크롤 처리
-                                                        if (sType == "TOP" && hitPart == 1) {
-                                                            if (isSplitNext && startMins >= 24 * 60) {
-                                                                // 다음 날로 쪼개졌던 part1을 내림 -> 둘째 날 단일 블록
-                                                                val origEndMins = activeEvent.endHour * 60 + activeEvent.endMinute
-                                                                val shiftedEvent = stretchedEvent.copy(
-                                                                    dayIndex = minOf(activeEvent.dayIndex + 1, 2),
-                                                                    startHour = 0, startMinute = 0,
-                                                                    endHour = (origEndMins - 24 * 60) / 60, endMinute = (origEndMins - 24 * 60) % 60
-                                                                )
-                                                                resultingEvents = resultingEvents.filter { it.id != activeEvent.id } + shiftedEvent
-                                                                isExtendedToNextDay = true
-                                                                coroutineScope.launch { delay(100); verticalScrollState.animateScrollTo(0) }
-                                                            } else if (isSplitPrev && startMins >= 0) {
-                                                                // 이전 날로 쪼개졌던 part1을 내림 -> 현재 날 단일 블록
-                                                                val origEndMins = activeEvent.endHour * 60 + activeEvent.endMinute
-                                                                val shiftedEvent = stretchedEvent.copy(
-                                                                    startHour = 0, startMinute = 0,
-                                                                    endHour = origEndMins / 60, endMinute = origEndMins % 60
-                                                                )
-                                                                resultingEvents = resultingEvents.filter { it.id != activeEvent.id } + shiftedEvent
-                                                                isExtendedToNextDay = true
-                                                                coroutineScope.launch { delay(100); verticalScrollState.animateScrollTo(0) }
-                                                            }
-                                                        } else if (sType == "BOTTOM" && hitPart == 2) {
-                                                            if (isSplitNext && endMins <= 24 * 60) {
-                                                                // 다음 날로 쪼개졌던 part2를 올림 -> 첫째 날 단일 블록
-                                                                val origStartMins = activeEvent.startHour * 60 + activeEvent.startMinute
-                                                                val shiftedEvent = stretchedEvent.copy(
-                                                                    startHour = origStartMins / 60, startMinute = origStartMins % 60,
-                                                                    endHour = 24, endMinute = 0
-                                                                )
-                                                                resultingEvents = resultingEvents.filter { it.id != activeEvent.id } + shiftedEvent
-                                                                isExtendedToPrevDay = true
-                                                                coroutineScope.launch { delay(100); verticalScrollState.animateScrollTo(verticalScrollState.maxValue) }
-                                                            } else if (isSplitPrev && endMins <= 0) {
-                                                                // 이전 날로 쪼개졌던 part2를 올림 -> 이전 날 단일 블록
-                                                                val origStartMins = activeEvent.startHour * 60 + activeEvent.startMinute
-                                                                val shiftedEvent = stretchedEvent.copy(
-                                                                    dayIndex = maxOf(activeEvent.dayIndex - 1, 0),
-                                                                    startHour = (origStartMins + 24 * 60) / 60, startMinute = (origStartMins + 24 * 60) % 60,
-                                                                    endHour = 24, endMinute = 0
-                                                                )
-                                                                resultingEvents = resultingEvents.filter { it.id != activeEvent.id } + shiftedEvent
-                                                                isExtendedToPrevDay = true
-                                                                coroutineScope.launch { delay(100); verticalScrollState.animateScrollTo(verticalScrollState.maxValue) }
-                                                            }
+                                                        // 🔥 핵심 수정: 완전히 당겨서 병합할 때, 살아남는 블록의 시간과 길이를 원본 기준으로 명시적 고정!
+                                                        if (sType == "TOP" && hitPart == 1 && startMins >= 24 * 60) {
+                                                            // 첫째 날 삭제 -> 둘째 날의 온전한 0시 시작 블록으로 확정
+                                                            val origEndMins = activeEvent.endHour * 60 + activeEvent.endMinute
+                                                            val shiftedEvent = stretchedEvent.copy(
+                                                                dayIndex = minOf(activeEvent.dayIndex + 1, 2),
+                                                                startHour = 0, // 🔥 무조건 0시 0분부터 시작하도록 강제 방어
+                                                                startMinute = 0,
+                                                                endHour = (origEndMins - 24 * 60) / 60, // 🔥 다음 날 블록의 원래 길이 온전히 보존
+                                                                endMinute = (origEndMins - 24 * 60) % 60
+                                                            )
+                                                            resultingEvents = resultingEvents.filter { it.id != activeEvent.id } + shiftedEvent
+                                                            isExtendedToNextDay = true
+                                                            coroutineScope.launch { delay(100); verticalScrollState.animateScrollTo(0) }
+                                                        } else if (sType == "BOTTOM" && hitPart == 2 && endMins <= 24 * 60) {
+                                                            // 둘째 날 삭제 -> 첫째 날의 온전한 24시 종료 블록으로 확정
+                                                            val origStartMins = activeEvent.startHour * 60 + activeEvent.startMinute
+                                                            val shiftedEvent = stretchedEvent.copy(
+                                                                startHour = origStartMins / 60, // 🔥 첫째 날 블록의 원래 시작 시간 보존
+                                                                startMinute = origStartMins % 60,
+                                                                endHour = 24, // 🔥 무조건 24시 0분 종료로 강제 방어
+                                                                endMinute = 0
+                                                            )
+                                                            resultingEvents = resultingEvents.filter { it.id != activeEvent.id } + shiftedEvent
+                                                            isExtendedToPrevDay = true
+                                                            coroutineScope.launch { delay(100); verticalScrollState.animateScrollTo(verticalScrollState.maxValue) }
                                                         }
                                                     }
                                                 }
 
-                                                // 이전 날로 밀려난 블록들 음수 좌표 보정 (기존 로직 보존)
+                                                // 이전 날로 밀려난 블록들 음수 좌표 보정
                                                 resultingEvents = resultingEvents.map { ev ->
                                                     val evStartMins = ev.startHour * 60 + ev.startMinute
                                                     if (evStartMins < 0 && ev.dayIndex > 0 && ev.id != activeEvent.id) {
@@ -995,7 +923,7 @@ fun TimetableGrid(
                                         onActionCancel()
                                     } else {
                                         gridPopupInfo = null
-                                        selectedPartSuffix = null
+                                        selectedPartSuffix = null // 🔥 팝업 초기화
                                     }
                                 },
                                 onLongPress = { offset ->
@@ -1005,6 +933,7 @@ fun TimetableGrid(
                                         val dIdx = (offset.x / with(density) { 120.dp.toPx() }).toInt().coerceIn(0, 2)
                                         val h = ((offset.y - with(density){hourHeight.toPx() / 2f}) / (with(density) { hourHeight.toPx() } / 60f)).toInt() / 60
 
+                                        // 🔥 v0.52b: 붙여넣기 팝업 화면 이탈 방지 (Clamp X)
                                         val popupWidthPx = with(density) { 140.dp.toPx() }
                                         val touchXInWindow = gridGlobalX - horizontalScrollState.value + offset.x
                                         val screenWidthPx = windowInfo.containerSize.width.toFloat()
@@ -1027,43 +956,33 @@ fun TimetableGrid(
                         val startMins = event.startHour * 60 + event.startMinute
                         val endMins = event.endHour * 60 + event.endMinute
 
+                        // 🔥 원본이 이미 분할되어 있었는지 검사
                         val originalEvent = events.find { it.id == event.id }
-                        val isOriginalSplitNext = originalEvent != null && (originalEvent.endHour * 60 + originalEvent.endMinute > 24 * 60)
-                        val isOriginalSplitPrev = originalEvent != null && (originalEvent.startHour * 60 + originalEvent.startMinute < 0)
+                        val isOriginalSplit = originalEvent != null && (originalEvent.endHour * 60 + originalEvent.endMinute > 24 * 60)
 
-                        val isStretchingBottom = currentMode == "STRETCH" && stretchType == "BOTTOM" && event.id == activeEvent?.id && endMins > 24 * 60 && !isOriginalSplitNext
-                        val isStretchingTop = currentMode == "STRETCH" && stretchType == "TOP" && event.id == activeEvent?.id && startMins < 0 && !isOriginalSplitPrev
+                        val isStretchingBottom = currentMode == "STRETCH" && stretchType == "BOTTOM" && event.id == activeEvent?.id && endMins > 24 * 60 && !isOriginalSplit
+                        val isStretchingTop = currentMode == "STRETCH" && stretchType == "TOP" && event.id == activeEvent?.id && startMins < 0 && !isOriginalSplit
 
-                        // 🔥 터치 제스처가 끊기지 않도록 분할 블록은 0분이 되어도 드래그 중엔 분할 상태를 유지함
-                        val forceSplitNext = currentMode == "STRETCH" && event.id == activeEvent?.id && isOriginalSplitNext
-                        val forceSplitPrev = currentMode == "STRETCH" && event.id == activeEvent?.id && isOriginalSplitPrev
-
-                        if ((endMins > 24 * 60 || forceSplitNext) && !isStretchingBottom) {
-                            val p1EndMins = minOf(endMins, 24 * 60)
-                            val part1 = event.copy(endHour = p1EndMins / 60, endMinute = p1EndMins % 60)
-
+                        if (endMins > 24 * 60 && !isStretchingBottom) {
+                            val part1 = event.copy(endHour = 24, endMinute = 0)
                             val nextDayIndex = minOf(event.dayIndex + 1, 2)
-                            val p2StartMins = maxOf(0, startMins - 24 * 60)
-                            val p2EndMins = maxOf(0, endMins - 24 * 60)
                             val part2 = event.copy(
-                                startHour = p2StartMins / 60, startMinute = p2StartMins % 60,
-                                endHour = p2EndMins / 60, endMinute = p2EndMins % 60,
+                                startHour = 0, startMinute = 0,
+                                endHour = (endMins - 24 * 60) / 60,
+                                endMinute = (endMins - 24 * 60) % 60,
                                 dayIndex = nextDayIndex
                             )
                             listOf(Pair(part1, "part1"), Pair(part2, "part2"))
-                        } else if ((startMins < 0 || forceSplitPrev) && !isStretchingTop) {
+                        } else if (startMins < 0 && !isStretchingTop) {
                             val actualStartMins = 24 * 60 + startMins
-                            val p1StartMins = minOf(actualStartMins, 24 * 60)
                             val part1 = event.copy(
                                 dayIndex = maxOf(event.dayIndex - 1, 0),
-                                startHour = p1StartMins / 60, startMinute = p1StartMins % 60,
-                                endHour = 24, endMinute = 0
+                                startHour = actualStartMins / 60,
+                                startMinute = actualStartMins % 60,
+                                endHour = 24,
+                                endMinute = 0
                             )
-                            val p2EndMins = maxOf(0, endMins)
-                            val part2 = event.copy(
-                                startHour = 0, startMinute = 0,
-                                endHour = p2EndMins / 60, endMinute = p2EndMins % 60
-                            )
+                            val part2 = event.copy(startHour = 0, startMinute = 0)
                             listOf(Pair(part1, "part1"), Pair(part2, "part2"))
                         } else {
                             listOf(Pair(event, "main"))
@@ -1087,6 +1006,7 @@ fun TimetableGrid(
 
                             val isEventSplit = partSuffix != "main"
 
+                            // 🔥 v0.52b: 터치된 특정 조각(part)만 팝업을 띄우도록 설정! (듀얼 팝업 방지)
                             val isSelected = (selectedEvent?.id == event.id) && (selectedPartSuffix == partSuffix)
 
                             EventBlockItem(
@@ -1096,7 +1016,7 @@ fun TimetableGrid(
                                 isEventSplit = isEventSplit, partSuffix = partSuffix,
                                 onLongClick = {
                                     gridPopupInfo = null
-                                    selectedPartSuffix = partSuffix
+                                    selectedPartSuffix = partSuffix // 🔥 누른 파트 기억
                                     val originalEvent = events.find { it.id == event.id } ?: event
                                     onEventLongClick(originalEvent)
                                 },
@@ -1179,7 +1099,7 @@ fun TimetableGrid(
 fun EventBlockItem(
     event: EventData, hourHeightDp: Float, isSelected: Boolean, currentMode: String, isActiveTarget: Boolean, alpha: Float,
     isMagneticSnap: Boolean = true, freeX: Float? = null, freeY: Float? = null,
-    isEventSplit: Boolean = false, partSuffix: String = "main",
+    isEventSplit: Boolean = false, partSuffix: String = "main", // 🔥 UI 제어용 파라미터 적용
     onLongClick: () -> Unit, onDeselect: () -> Unit, onClick: () -> Unit,
     onCopy: () -> Unit, onMoveStart: () -> Unit, onStretchStart: () -> Unit, onActionCancel: () -> Unit,
     onEventUnassigned: () -> Unit
@@ -1188,14 +1108,10 @@ fun EventBlockItem(
     val windowInfo = LocalWindowInfo.current
     val minuteHeightDp = hourHeightDp / 60f
 
-    // 🔥 블록의 실제 길이가 0분 이하라면 투명하게(Alpha 0) 만들어 화면에서 숨김!
-    val realDuration = (event.endHour * 60 + event.endMinute) - (event.startHour * 60 + event.startMinute)
-    val displayAlpha = if (realDuration <= 0) 0f else alpha
-
     val gridX = (event.dayIndex * 120).dp
     val gridY = ((event.startHour * 60 + event.startMinute) * minuteHeightDp).dp + (hourHeightDp / 2f).dp
     val calculatedHeight = (((event.endHour * 60 + event.endMinute) - (event.startHour * 60 + event.startMinute)) * minuteHeightDp)
-    // 🔥 분할 블록이 압축될 때는 0dp까지 줄어들도록 강제 높이 해제
+    // 🔥 수정: 분할 블록이거나 길이 조절 중일 땐 28dp 강제를 풀어서 0까지 쫀득하게 줄어들게 허용!
     val safeBlockHeightDp = if (isEventSplit || currentMode == "STRETCH") maxOf(0f, calculatedHeight).dp else maxOf(28f, calculatedHeight).dp
 
     val isMoving = isActiveTarget && freeX != null
@@ -1216,6 +1132,7 @@ fun EventBlockItem(
     val animatedBottom by animateDpAsState(targetBottom, animSpecY, label = "bottom")
 
     val animatedY = animatedTop
+    // 🔥 수정: 애니메이션이 그려질 때도 28dp 강제를 풀어서 완전히 투명해질 수 있게 허용!
     val animatedHeight = if (isEventSplit || currentMode == "STRETCH") maxOf(0.dp, animatedBottom - animatedTop) else maxOf(28.dp, animatedBottom - animatedTop)
 
     var tapOffset by remember { mutableStateOf(IntOffset.Zero) }
@@ -1226,8 +1143,8 @@ fun EventBlockItem(
             .offset(x = animatedX, y = animatedY)
             .width(120.dp).height(animatedHeight)
             .padding(horizontal = 6.dp, vertical = 2.dp)
-            .shadow(if ((isSelected || isActiveTarget) && displayAlpha > 0f) 12.dp else 0.dp, RoundedCornerShape(8.dp))
-            .alpha(displayAlpha)
+            .shadow(if (isSelected || isActiveTarget) 12.dp else 0.dp, RoundedCornerShape(8.dp))
+            .alpha(alpha)
             .clip(RoundedCornerShape(8.dp))
             .background(event.color)
             .onGloballyPositioned { coordinates -> blockXInWindow = coordinates.positionInWindow().x }
@@ -1261,7 +1178,7 @@ fun EventBlockItem(
             if (event.description.isNotEmpty()) Text(text = event.description, color = Color.White.copy(alpha = 0.9f), fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 14.sp)
         }
 
-        if (isStretching && realDuration > 0) { // 🔥 핸들 숨김
+        if (isStretching) {
             val startMins = event.startHour * 60 + event.startMinute
             val endMins = event.endHour * 60 + event.endMinute
 
@@ -1284,6 +1201,7 @@ fun EventBlockItem(
                     Text("이전 날로 확장", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             } else {
+                // 🔥 v0.52b: 분할 블록일 경우 해당되는 핸들만 렌더링
                 if (isEventSplit) {
                     if (partSuffix == "part1") {
                         Box(modifier = Modifier.align(Alignment.TopCenter).padding(top = 2.dp).width(30.dp).height(4.dp).background(Color.White.copy(alpha=0.8f), CircleShape))
