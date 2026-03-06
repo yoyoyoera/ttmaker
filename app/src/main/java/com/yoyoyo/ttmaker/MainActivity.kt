@@ -131,6 +131,9 @@ val initialUnassignedEvents = listOf(
 // ==========================================
 // 2. 메인 화면
 // ==========================================
+// ==========================================
+// 2. 메인 화면
+// ==========================================
 @Composable
 fun YoyoTimetableScreen() {
     val density = LocalDensity.current
@@ -231,10 +234,14 @@ fun YoyoTimetableScreen() {
                                 dayIndex = dayIndex, id = UUID.randomUUID().toString()
                             )
 
+                            // 🔥 수정 1: 복사/붙여넣기 시 절대 시간(Absolute Minutes)을 활용한 겹침 검사
+                            val newAbsStart = dayIndex * 24 * 60 + newStartMins
+                            val newAbsEnd = dayIndex * 24 * 60 + newEndMins
+
                             val overlaps = events.filter { old ->
-                                val oldStart = old.startHour * 60 + old.startMinute
-                                val oldEnd = old.endHour * 60 + old.endMinute
-                                old.dayIndex == dayIndex && newStartMins < oldEnd && newEndMins > oldStart
+                                val oldAbsStart = old.dayIndex * 24 * 60 + old.startHour * 60 + old.startMinute
+                                val oldAbsEnd = old.dayIndex * 24 * 60 + old.endHour * 60 + old.endMinute
+                                newAbsStart < oldAbsEnd && newAbsEnd > oldAbsStart
                             }
 
                             if (overlaps.isNotEmpty()) overlapDialogInfo = OverlapInfo(newEvent, overlaps)
@@ -332,13 +339,14 @@ fun YoyoTimetableScreen() {
                             events = events.filter { it.id != savedEvent.id }
                             editingEvent = null
                         } else {
-                            val newStartMins = savedEvent.startHour * 60 + savedEvent.startMinute
-                            val newEndMins = savedEvent.endHour * 60 + savedEvent.endMinute
+                            // 🔥 수정 2: 수정 창에서 저장할 때 절대 시간(Absolute Minutes)을 활용한 겹침 검사로 날짜 상관없이 100% 감지
+                            val newAbsStart = savedEvent.dayIndex * 24 * 60 + savedEvent.startHour * 60 + savedEvent.startMinute
+                            val newAbsEnd = savedEvent.dayIndex * 24 * 60 + savedEvent.endHour * 60 + savedEvent.endMinute
 
                             val overlaps = events.filter { old ->
-                                val oldStart = old.startHour * 60 + old.startMinute
-                                val oldEnd = old.endHour * 60 + old.endMinute
-                                old.id != savedEvent.id && old.dayIndex == savedEvent.dayIndex && newStartMins < oldEnd && newEndMins > oldStart
+                                val oldAbsStart = old.dayIndex * 24 * 60 + old.startHour * 60 + old.startMinute
+                                val oldAbsEnd = old.dayIndex * 24 * 60 + old.endHour * 60 + old.endMinute
+                                old.id != savedEvent.id && newAbsStart < oldAbsEnd && newAbsEnd > oldAbsStart
                             }
 
                             if (overlaps.isNotEmpty()) {
@@ -368,19 +376,29 @@ fun YoyoTimetableScreen() {
                     val updated = events.toMutableList()
                     updated.removeAll { it.id == info.newEvent.id }
                     updated.removeAll { old -> info.overlappingEvents.any { it.id == old.id } }
-                    val newStart = info.newEvent.startHour * 60 + info.newEvent.startMinute
-                    val newEnd = info.newEvent.endHour * 60 + info.newEvent.endMinute
+
+                    // 🔥 수정 3: 덮어쓰기 로직도 절대 시간 기준으로 변경해서 분할 블록이 완벽하게 깎이도록 처리
+                    val newAbsStart = info.newEvent.dayIndex * 24 * 60 + info.newEvent.startHour * 60 + info.newEvent.startMinute
+                    val newAbsEnd = info.newEvent.dayIndex * 24 * 60 + info.newEvent.endHour * 60 + info.newEvent.endMinute
 
                     info.overlappingEvents.forEach { old ->
-                        val oldStart = old.startHour * 60 + old.startMinute
-                        val oldEnd = old.endHour * 60 + old.endMinute
-                        if (oldStart in newStart until newEnd && oldEnd > newEnd) {
-                            updated.add(old.copy(startHour = newEnd / 60, startMinute = newEnd % 60, id = UUID.randomUUID().toString()))
-                        } else if (oldStart < newStart && oldEnd in (newStart + 1)..newEnd) {
-                            updated.add(old.copy(endHour = newStart / 60, endMinute = newStart % 60, id = UUID.randomUUID().toString()))
-                        } else if (oldStart < newStart && oldEnd > newEnd) {
-                            updated.add(old.copy(endHour = newStart / 60, endMinute = newStart % 60, id = UUID.randomUUID().toString()))
-                            updated.add(old.copy(startHour = newEnd / 60, startMinute = newEnd % 60, id = UUID.randomUUID().toString()))
+                        val oldAbsStart = old.dayIndex * 24 * 60 + old.startHour * 60 + old.startMinute
+                        val oldAbsEnd = old.dayIndex * 24 * 60 + old.endHour * 60 + old.endMinute
+
+                        if (oldAbsStart in newAbsStart until newAbsEnd && oldAbsEnd > newAbsEnd) {
+                            // 시작 부분이 파먹힘
+                            val relStartMins = newAbsEnd - (old.dayIndex * 24 * 60)
+                            updated.add(old.copy(startHour = relStartMins / 60, startMinute = relStartMins % 60, id = UUID.randomUUID().toString()))
+                        } else if (oldAbsStart < newAbsStart && oldAbsEnd in (newAbsStart + 1)..newAbsEnd) {
+                            // 끝 부분이 파먹힘
+                            val relEndMins = newAbsStart - (old.dayIndex * 24 * 60)
+                            updated.add(old.copy(endHour = relEndMins / 60, endMinute = relEndMins % 60, id = UUID.randomUUID().toString()))
+                        } else if (oldAbsStart < newAbsStart && oldAbsEnd > newAbsEnd) {
+                            // 허리가 파먹혀서 두 개로 쪼개짐
+                            val relEndMins = newAbsStart - (old.dayIndex * 24 * 60)
+                            val relStartMins = newAbsEnd - (old.dayIndex * 24 * 60)
+                            updated.add(old.copy(endHour = relEndMins / 60, endMinute = relEndMins % 60, id = UUID.randomUUID().toString()))
+                            updated.add(old.copy(startHour = relStartMins / 60, startMinute = relStartMins % 60, id = UUID.randomUUID().toString()))
                         }
                     }
                     updated.add(info.newEvent)
@@ -561,52 +579,89 @@ fun calculateStretchPreview(
 }
 
 fun finalizeDropWithPush(events: List<EventData>, movingEvent: EventData, finalStartMins: Int, dayIndex: Int): List<EventData> {
+    // 🔥 밀어넣기도 요일에 갇히지 않고 "절대 시간" 기준으로 작동하도록 업그레이드!
+    val absStart = dayIndex * 24 * 60 + finalStartMins
     val duration = (movingEvent.endHour * 60 + movingEvent.endMinute) - (movingEvent.startHour * 60 + movingEvent.startMinute)
-    val snappedEndMins = finalStartMins + duration
-    val movingCenter = finalStartMins + duration / 2.0f
+    val absEnd = absStart + duration
+    val movingCenter = absStart + duration / 2.0f
 
     val others = events.filter { it.id != movingEvent.id }
-    val dayOthers = others.filter { it.dayIndex == dayIndex }
 
-    val hasOverlap = dayOthers.any { maxOf(finalStartMins, it.startHour * 60 + it.startMinute) < minOf(snappedEndMins, it.endHour * 60 + it.endMinute) }
+    // абсолю트 시간 기준으로 겹침 검사
+    val hasOverlap = others.any { old ->
+        val oldAbsStart = old.dayIndex * 24 * 60 + old.startHour * 60 + old.startMinute
+        val oldAbsEnd = old.dayIndex * 24 * 60 + old.endHour * 60 + old.endMinute
+        maxOf(absStart, oldAbsStart) < minOf(absEnd, oldAbsEnd)
+    }
+
     val finalizedDayEvents = mutableListOf<EventData>()
 
     if (!hasOverlap) {
-        finalizedDayEvents.addAll(dayOthers)
+        finalizedDayEvents.addAll(others)
     } else {
-        val pushUpList = dayOthers.filter {
-            val center = it.startHour * 60 + it.startMinute + ((it.endHour * 60 + it.endMinute) - (it.startHour * 60 + it.startMinute)) / 2.0f
-            center < movingCenter
-        }.sortedByDescending { it.endHour * 60 + it.endMinute }
+        // 중심점을 기준으로 위로 밀려날 애들과 아래로 밀려날 애들을 분류
+        val pushUpList = others.filter { old ->
+            val oldAbsStart = old.dayIndex * 24 * 60 + old.startHour * 60 + old.startMinute
+            val oldAbsEnd = old.dayIndex * 24 * 60 + old.endHour * 60 + old.endMinute
+            val oldCenter = oldAbsStart + (oldAbsEnd - oldAbsStart) / 2.0f
+            oldCenter < movingCenter
+        }.sortedByDescending { it.dayIndex * 24 * 60 + it.endHour * 60 + it.endMinute }
 
-        val pushDownList = dayOthers.filter {
-            val center = it.startHour * 60 + it.startMinute + ((it.endHour * 60 + it.endMinute) - (it.startHour * 60 + it.startMinute)) / 2.0f
-            center >= movingCenter
-        }.sortedBy { it.startHour * 60 + it.startMinute }
+        val pushDownList = others.filter { old ->
+            val oldAbsStart = old.dayIndex * 24 * 60 + old.startHour * 60 + old.startMinute
+            val oldAbsEnd = old.dayIndex * 24 * 60 + old.endHour * 60 + old.endMinute
+            val oldCenter = oldAbsStart + (oldAbsEnd - oldAbsStart) / 2.0f
+            oldCenter >= movingCenter
+        }.sortedBy { it.dayIndex * 24 * 60 + it.startHour * 60 + it.startMinute }
 
-        pushUpList.fold(finalStartMins) { boundary, old ->
+        // 위쪽으로 연쇄 밀어넣기
+        var currentUpperBoundary = absStart
+        for (old in pushUpList) {
             val oDur = (old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)
-            val sEnd = minOf(old.endHour * 60 + old.endMinute, boundary)
-            val sStart = maxOf(0, sEnd - oDur)
-            finalizedDayEvents.add(old.copy(startHour = sStart / 60, startMinute = sStart % 60, endHour = (sStart + oDur) / 60, endMinute = (sStart + oDur) % 60))
-            sStart
+            val oldAbsEnd = old.dayIndex * 24 * 60 + old.endHour * 60 + old.endMinute
+            val sEnd = minOf(oldAbsEnd, currentUpperBoundary)
+            val sStart = maxOf(0, sEnd - oDur) // 0시(타임라인 끝) 밑으로는 밀리지 않도록 방어
+
+            finalizedDayEvents.add(old.copy(
+                dayIndex = sStart / (24 * 60),
+                startHour = (sStart % (24 * 60)) / 60,
+                startMinute = sStart % 60,
+                endHour = (sEnd - (sStart / (24 * 60)) * 24 * 60) / 60,
+                endMinute = sEnd % 60
+            ))
+            currentUpperBoundary = sStart
         }
 
-        pushDownList.fold(snappedEndMins) { boundary, old ->
+        // 아래쪽으로 연쇄 밀어넣기
+        var currentLowerBoundary = absEnd
+        for (old in pushDownList) {
             val oDur = (old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)
-            val sStart = maxOf(old.startHour * 60 + old.startMinute, boundary)
+            val oldAbsStart = old.dayIndex * 24 * 60 + old.startHour * 60 + old.startMinute
+            val sStart = maxOf(oldAbsStart, currentLowerBoundary)
             val sEnd = sStart + oDur
-            finalizedDayEvents.add(old.copy(startHour = sStart / 60, startMinute = sStart % 60, endHour = sEnd / 60, endMinute = sEnd % 60))
-            sEnd
+
+            finalizedDayEvents.add(old.copy(
+                dayIndex = sStart / (24 * 60),
+                startHour = (sStart % (24 * 60)) / 60,
+                startMinute = sStart % 60,
+                endHour = (sEnd - (sStart / (24 * 60)) * 24 * 60) / 60,
+                endMinute = sEnd % 60
+            ))
+            currentLowerBoundary = sEnd
         }
     }
 
-    val finalizedMoving = movingEvent.copy(startHour = finalStartMins / 60, startMinute = finalStartMins % 60, endHour = snappedEndMins / 60, endMinute = snappedEndMins % 60, dayIndex = dayIndex)
+    // 움직인 원본 블록도 절대 시간에 맞춰서 삽입
+    val finalizedMoving = movingEvent.copy(
+        dayIndex = absStart / (24 * 60),
+        startHour = (absStart % (24 * 60)) / 60,
+        startMinute = absStart % 60,
+        endHour = (absEnd - (absStart / (24 * 60)) * 24 * 60) / 60,
+        endMinute = absEnd % 60
+    )
     finalizedDayEvents.add(finalizedMoving)
 
-    val finalEvents = others.filter { it.dayIndex != dayIndex }.toMutableList()
-    finalEvents.addAll(finalizedDayEvents)
-    return finalEvents
+    return finalizedDayEvents
 }
 
 // ==========================================
@@ -1285,6 +1340,9 @@ fun AddEventButton(onClick: () -> Unit) {
 // ==========================================
 // 6. 일정 편집/생성 다이얼로그 (오버레이)
 // ==========================================
+// ==========================================
+// 6. 일정 편집/생성 다이얼로그 (오버레이)
+// ==========================================
 @Composable
 fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (EventData) -> Unit) {
     val descParts = initialEvent.description.split("\n", limit = 2)
@@ -1294,31 +1352,58 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
     var memo by remember(initialEvent) { mutableStateOf(descParts.getOrNull(1) ?: "") }
     var color by remember(initialEvent) { mutableStateOf(initialEvent.color) }
 
-    var dayIndex by remember(initialEvent) { mutableStateOf(if (initialEvent.dayIndex == -1) 0 else initialEvent.dayIndex) }
-    var startMins by remember(initialEvent) { mutableStateOf(initialEvent.startHour * 60 + initialEvent.startMinute) }
-    var durationMins by remember(initialEvent) { mutableStateOf(maxOf(5, (initialEvent.endHour * 60 + initialEvent.endMinute) - startMins)) }
+    var startDayIndex by remember(initialEvent) { mutableIntStateOf(if (initialEvent.dayIndex == -1) 0 else initialEvent.dayIndex) }
+    var startMins by remember(initialEvent) { mutableIntStateOf(initialEvent.startHour * 60 + initialEvent.startMinute) }
+
+    var endDayIndex by remember(initialEvent) {
+        val totalEndMins = initialEvent.endHour * 60 + initialEvent.endMinute
+        var dIdx = if (initialEvent.dayIndex == -1) 0 else initialEvent.dayIndex
+        var eMins = totalEndMins
+        while (eMins >= 24 * 60) {
+            dIdx++
+            eMins -= 24 * 60
+        }
+        mutableIntStateOf(minOf(dIdx, 3)) // 내부 계산용으로 최대 3까지 허용
+    }
+    var endMins by remember(initialEvent) {
+        val totalEndMins = initialEvent.endHour * 60 + initialEvent.endMinute
+        mutableIntStateOf(totalEndMins % (24 * 60))
+    }
 
     var errorMessage by remember(initialEvent) { mutableStateOf("") }
     var showColorPicker by remember(initialEvent) { mutableStateOf(false) }
 
     val days = listOf("27일(토)", "28일(일)", "29일(월)")
-    val endMins = startMins + durationMins
+
+    // 절대 시간 분(Minutes) 계산
+    val totalStart = startDayIndex * 24 * 60 + startMins
+    val totalEnd = endDayIndex * 24 * 60 + endMins
+    val durationMins = totalEnd - totalStart
+
+    // 🔥 D일 00:00을 D-1일 24:00으로 표기하기 위한 변환 로직
+    var displayEndDayIdx = endDayIndex
+    var displayEndM = endMins
+    if (endMins == 0 && endDayIndex > 0) {
+        displayEndDayIdx = endDayIndex - 1
+        displayEndM = 24 * 60
+    }
 
     val startH = String.format("%02d", startMins / 60)
     val startM = String.format("%02d", startMins % 60)
 
-    val durH = (durationMins / 60).toString()
-    val durM = String.format("%02d", durationMins % 60)
+    val durH = (maxOf(0, durationMins) / 60).toString()
+    val durM = String.format("%02d", maxOf(0, durationMins) % 60)
 
-    val displayEndMins = endMins
-    val endH = String.format("%02d", displayEndMins / 60)
-    val endM = String.format("%02d", displayEndMins % 60)
+    val endH = String.format("%02d", displayEndM / 60)
+    val endM = String.format("%02d", displayEndM % 60)
 
     val hourOptions = (0..23).map { String.format("%02d", it) }
-    val endHourOptions = (0..36).map { String.format("%02d", it) }
-    val durHourOptions = (0..36).map { it.toString() }
+    val endHourOptions = (0..24).map { String.format("%02d", it) } // 종료 시간에는 24시 포함
+    val durHourOptions = (0..48).map { it.toString() }
     val minuteOptions = (0..55 step 5).map { String.format("%02d", it) }
+    val endMinuteOptions = if (displayEndM / 60 == 24) listOf("00") else minuteOptions // 24시일 땐 무조건 00분만 선택 가능
 
+    // 🔥 누락되었던 팔레트 복구!
     val colorPalette = listOf(
         Color(0xFF95A5A6), Color(0xFFE74C3C), Color(0xFFE67E22), Color(0xFFF1C40F),
         Color(0xFF2ECC71), Color(0xFF1ABC9C), Color(0xFF3498DB), Color(0xFF9B59B6),
@@ -1354,18 +1439,34 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
             Text("진행 시간", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.DarkGray)
             Spacer(modifier = Modifier.height(16.dp))
 
+            // ================= START TIME =================
             Row(verticalAlignment = Alignment.CenterVertically) {
-                DropdownSelector(value = days[dayIndex], options = days, onSelect = { dayIndex = days.indexOf(it) }, modifier = Modifier.weight(1.2f))
+                DropdownSelector(value = days[startDayIndex], options = days, onSelect = { d ->
+                    val newDay = days.indexOf(d)
+                    val newTotalStart = newDay * 24 * 60 + startMins
+
+                    val error = if (newTotalStart >= totalEnd) "시작 시간이 종료 시간보다 늦을 수 없습니다!"
+                    else if ((totalEnd - 1) / (24 * 60) - newDay >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
+                    else ""
+                    if (error.isNotEmpty()) errorMessage = error
+                    else { startDayIndex = newDay; errorMessage = "" }
+                }, modifier = Modifier.weight(1.2f))
                 Spacer(modifier = Modifier.width(8.dp))
                 Row(modifier = Modifier.weight(1.5f), verticalAlignment = Alignment.CenterVertically) {
                     DropdownSelector(value = startH, options = hourOptions, onSelect = { h ->
-                        startMins = h.toInt() * 60 + (startMins % 60)
-                        errorMessage = ""
+                        val newTotalStart = startDayIndex * 24 * 60 + h.toInt() * 60 + (startMins % 60)
+
+                        val error = if (newTotalStart >= totalEnd) "시작 시간이 종료 시간보다 늦을 수 없습니다!"
+                        else if ((totalEnd - 1) / (24 * 60) - startDayIndex >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
+                        else ""
+                        if (error.isNotEmpty()) errorMessage = error
+                        else { startMins = h.toInt() * 60 + (startMins % 60); errorMessage = "" }
                     }, modifier = Modifier.weight(1f))
                     Text(":", modifier = Modifier.padding(horizontal = 4.dp), fontWeight = FontWeight.Bold)
                     DropdownSelector(value = startM, options = minuteOptions, onSelect = { m ->
-                        startMins = (startMins / 60) * 60 + m.toInt()
-                        errorMessage = ""
+                        val newTotalStart = startDayIndex * 24 * 60 + (startMins / 60) * 60 + m.toInt()
+                        if (newTotalStart >= totalEnd) errorMessage = "시작 시간이 종료 시간보다 늦을 수 없습니다!"
+                        else { startMins = (startMins / 60) * 60 + m.toInt(); errorMessage = "" }
                     }, modifier = Modifier.weight(1f))
                 }
                 Spacer(modifier = Modifier.width(8.dp))
@@ -1373,20 +1474,39 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
             }
             Spacer(modifier = Modifier.height(12.dp))
 
+            // ================= DURATION =================
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Spacer(modifier = Modifier.weight(1.2f))
                 Spacer(modifier = Modifier.width(8.dp))
                 Row(modifier = Modifier.weight(1.5f), verticalAlignment = Alignment.CenterVertically) {
                     DropdownSelector(value = durH, options = durHourOptions, onSelect = { h ->
                         val newDur = h.toInt() * 60 + (durationMins % 60)
-                        durationMins = maxOf(5, newDur)
-                        errorMessage = ""
+                        val newTotalEnd = totalStart + maxOf(5, newDur)
+
+                        val error = if (newTotalEnd > 3 * 24 * 60) "마지막 요일의 24시를 초과할 수 없습니다!"
+                        else if ((newTotalEnd - 1) / (24 * 60) - startDayIndex >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
+                        else ""
+                        if (error.isNotEmpty()) errorMessage = error
+                        else {
+                            endDayIndex = newTotalEnd / (24 * 60)
+                            endMins = newTotalEnd % (24 * 60)
+                            errorMessage = ""
+                        }
                     }, modifier = Modifier.weight(1f))
                     Text(":", modifier = Modifier.padding(horizontal = 4.dp), fontWeight = FontWeight.Bold)
                     DropdownSelector(value = durM, options = minuteOptions, onSelect = { m ->
                         val newDur = (durationMins / 60) * 60 + m.toInt()
-                        durationMins = maxOf(5, newDur)
-                        errorMessage = ""
+                        val newTotalEnd = totalStart + maxOf(5, newDur)
+
+                        val error = if (newTotalEnd > 3 * 24 * 60) "마지막 요일의 24시를 초과할 수 없습니다!"
+                        else if ((newTotalEnd - 1) / (24 * 60) - startDayIndex >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
+                        else ""
+                        if (error.isNotEmpty()) errorMessage = error
+                        else {
+                            endDayIndex = newTotalEnd / (24 * 60)
+                            endMins = newTotalEnd % (24 * 60)
+                            errorMessage = ""
+                        }
                     }, modifier = Modifier.weight(1f))
                 }
                 Spacer(modifier = Modifier.width(8.dp))
@@ -1394,22 +1514,57 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
             }
             Spacer(modifier = Modifier.height(12.dp))
 
+            // ================= END TIME =================
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(modifier = Modifier.weight(1.2f).background(Color(0xFFEEEEEE), RoundedCornerShape(8.dp)).padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
-                    Text(text = days[dayIndex], fontSize = 16.sp, color = Color.Gray)
-                }
+                DropdownSelector(value = days[displayEndDayIdx], options = days, onSelect = { d ->
+                    val selectedDay = days.indexOf(d)
+                    val newTotalEnd = selectedDay * 24 * 60 + displayEndM
+
+                    val error = if (selectedDay < startDayIndex) "종료 일수는 시작 일수보다 빠를 수 없습니다!"
+                    else if (newTotalEnd <= totalStart) "종료 시간은 시작 시간보다 늦어야 합니다!"
+                    else if (newTotalEnd > 3 * 24 * 60) "마지막 요일의 24시를 초과할 수 없습니다!"
+                    else if ((newTotalEnd - 1) / (24 * 60) - startDayIndex >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
+                    else ""
+                    if (error.isNotEmpty()) errorMessage = error
+                    else {
+                        endDayIndex = newTotalEnd / (24 * 60)
+                        endMins = newTotalEnd % (24 * 60)
+                        errorMessage = ""
+                    }
+                }, modifier = Modifier.weight(1.2f))
                 Spacer(modifier = Modifier.width(8.dp))
                 Row(modifier = Modifier.weight(1.5f), verticalAlignment = Alignment.CenterVertically) {
                     DropdownSelector(value = endH, options = endHourOptions, onSelect = { h ->
-                        val proposed = h.toInt() * 60 + (endMins % 60)
-                        if (proposed <= startMins) errorMessage = "종료 시간은 시작 시간보다 늦어야 합니다!"
-                        else { durationMins = proposed - startMins; errorMessage = "" }
+                        val hInt = h.toInt()
+                        val mInt = if (hInt == 24) 0 else (displayEndM % 60)
+                        val newTotalEnd = displayEndDayIdx * 24 * 60 + hInt * 60 + mInt
+
+                        val error = if (newTotalEnd <= totalStart) "종료 시간은 시작 시간보다 늦어야 합니다!"
+                        else if (newTotalEnd > 3 * 24 * 60) "마지막 요일의 24시를 초과할 수 없습니다!"
+                        else if ((newTotalEnd - 1) / (24 * 60) - startDayIndex >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
+                        else ""
+                        if (error.isNotEmpty()) errorMessage = error
+                        else {
+                            endDayIndex = newTotalEnd / (24 * 60)
+                            endMins = newTotalEnd % (24 * 60)
+                            errorMessage = ""
+                        }
                     }, modifier = Modifier.weight(1f))
                     Text(":", modifier = Modifier.padding(horizontal = 4.dp), fontWeight = FontWeight.Bold)
-                    DropdownSelector(value = endM, options = minuteOptions, onSelect = { m ->
-                        val proposed = (endMins / 60) * 60 + m.toInt()
-                        if (proposed <= startMins) errorMessage = "종료 시간은 시작 시간보다 늦어야 합니다!"
-                        else { durationMins = proposed - startMins; errorMessage = "" }
+                    DropdownSelector(value = endM, options = endMinuteOptions, onSelect = { m ->
+                        val hInt = displayEndM / 60
+                        val newTotalEnd = displayEndDayIdx * 24 * 60 + hInt * 60 + m.toInt()
+
+                        val error = if (newTotalEnd <= totalStart) "종료 시간은 시작 시간보다 늦어야 합니다!"
+                        else if (newTotalEnd > 3 * 24 * 60) "마지막 요일의 24시를 초과할 수 없습니다!"
+                        else if ((newTotalEnd - 1) / (24 * 60) - startDayIndex >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
+                        else ""
+                        if (error.isNotEmpty()) errorMessage = error
+                        else {
+                            endDayIndex = newTotalEnd / (24 * 60)
+                            endMins = newTotalEnd % (24 * 60)
+                            errorMessage = ""
+                        }
                     }, modifier = Modifier.weight(1f))
                 }
                 Spacer(modifier = Modifier.width(8.dp))
@@ -1452,12 +1607,15 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
                 }
                 Box(modifier = Modifier.weight(1f).background(Color(0xFFE0E0E0), RoundedCornerShape(12.dp)).clickable {
                     val finalDesc = listOf(location.trim(), memo.trim()).filter { it.isNotEmpty() }.joinToString("\n")
-                    val clampedEnd = endMins
+
+                    val finalEndHour = (totalEnd - (startDayIndex * 24 * 60)) / 60
+                    val finalEndMinute = (totalEnd - (startDayIndex * 24 * 60)) % 60
+
                     val finalEvent = initialEvent.copy(
                         title = title.ifEmpty { "새 일정" }, description = finalDesc,
-                        dayIndex = if(initialEvent.dayIndex == -1) -1 else dayIndex,
+                        dayIndex = if(initialEvent.dayIndex == -1) -1 else startDayIndex,
                         startHour = startMins / 60, startMinute = startMins % 60,
-                        endHour = clampedEnd / 60, endMinute = clampedEnd % 60,
+                        endHour = finalEndHour, endMinute = finalEndMinute,
                         color = color
                     )
                     onSave(finalEvent)
