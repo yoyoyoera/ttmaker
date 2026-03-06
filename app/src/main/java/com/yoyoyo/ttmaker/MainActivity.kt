@@ -1112,8 +1112,21 @@ fun EventBlockItem(
                     Text("이전 날로\n확장", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp, textAlign = TextAlign.Center)
                 }
             } else {
-                Box(modifier = Modifier.align(Alignment.TopCenter).padding(top = 2.dp).width(30.dp).height(4.dp).background(Color.White.copy(alpha=0.8f), CircleShape))
-                Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp).width(30.dp).height(4.dp).background(Color.White.copy(alpha=0.8f), CircleShape))
+                // 🔥 추가 및 수정된 부분: 분할된 블록의 위치(part1 vs part2)에 따라 핸들을 1개만 렌더링
+                if (isEventSplit) {
+                    // part2 (A+1일 블록): 0시부터 시작하므로 '하단 핸들'만 표시
+                    if (event.startHour == 0 && event.startMinute == 0) {
+                        Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp).width(30.dp).height(4.dp).background(Color.White.copy(alpha=0.8f), CircleShape))
+                    }
+                    // part1 (A일 블록): 24시에 끝나므로 '상단 핸들'만 표시
+                    else {
+                        Box(modifier = Modifier.align(Alignment.TopCenter).padding(top = 2.dp).width(30.dp).height(4.dp).background(Color.White.copy(alpha=0.8f), CircleShape))
+                    }
+                } else {
+                    // 분할되지 않은 일반 블록: 상하단 모두 표시
+                    Box(modifier = Modifier.align(Alignment.TopCenter).padding(top = 2.dp).width(30.dp).height(4.dp).background(Color.White.copy(alpha=0.8f), CircleShape))
+                    Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp).width(30.dp).height(4.dp).background(Color.White.copy(alpha=0.8f), CircleShape))
+                }
             }
         }
 
