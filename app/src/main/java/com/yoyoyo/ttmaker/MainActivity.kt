@@ -1343,298 +1343,122 @@ fun AddEventButton(onClick: () -> Unit) {
 // ==========================================
 // 6. 일정 편집/생성 다이얼로그 (오버레이)
 // ==========================================
+// ==========================================
+// 6. 일정 편집/생성 다이얼로그 (오버레이)
+// ==========================================
 @Composable
 fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (EventData) -> Unit) {
     val descParts = initialEvent.description.split("\n", limit = 2)
-
     var title by remember(initialEvent) { mutableStateOf(initialEvent.title) }
     var location by remember(initialEvent) { mutableStateOf(descParts.getOrNull(0) ?: "") }
     var memo by remember(initialEvent) { mutableStateOf(descParts.getOrNull(1) ?: "") }
     var color by remember(initialEvent) { mutableStateOf(initialEvent.color) }
 
-    var startDayIndex by remember(initialEvent) { mutableIntStateOf(if (initialEvent.dayIndex == -1) 0 else initialEvent.dayIndex) }
-    var startMins by remember(initialEvent) { mutableIntStateOf(initialEvent.startHour * 60 + initialEvent.startMinute) }
+    // 🔥 수정된 부분: 시작/종료 시간이 음수(-1시 등)일 때 이전 날짜의 23시 등으로 올바르게 정규화
+    var startDayIndex by remember(initialEvent) {
+        var d = if (initialEvent.dayIndex == -1) 0 else initialEvent.dayIndex
+        var s = initialEvent.startHour * 60 + initialEvent.startMinute
+        while (s < 0) { d--; s += 1440 }
+        mutableIntStateOf(maxOf(0, d))
+    }
+    var startMins by remember(initialEvent) {
+        var s = initialEvent.startHour * 60 + initialEvent.startMinute
+        while (s < 0) { s += 1440 }
+        mutableIntStateOf(s)
+    }
 
     var endDayIndex by remember(initialEvent) {
-        val totalEndMins = initialEvent.endHour * 60 + initialEvent.endMinute
-        var dIdx = if (initialEvent.dayIndex == -1) 0 else initialEvent.dayIndex
-        var eMins = totalEndMins
-        while (eMins >= 24 * 60) {
-            dIdx++
-            eMins -= 24 * 60
-        }
-        mutableIntStateOf(minOf(dIdx, 3)) // 내부 계산용으로 최대 3까지 허용
+        var d = if (initialEvent.dayIndex == -1) 0 else initialEvent.dayIndex
+        var e = initialEvent.endHour * 60 + initialEvent.endMinute
+        while(e >= 1440){ d++; e -= 1440 }
+        while(e < 0){ d--; e += 1440 }
+        mutableIntStateOf(minOf(maxOf(0, d), 3))
     }
     var endMins by remember(initialEvent) {
-        val totalEndMins = initialEvent.endHour * 60 + initialEvent.endMinute
-        mutableIntStateOf(totalEndMins % (24 * 60))
+        var e = initialEvent.endHour * 60 + initialEvent.endMinute
+        while (e < 0) { e += 1440 }
+        mutableIntStateOf(e % 1440)
     }
 
     var errorMessage by remember(initialEvent) { mutableStateOf("") }
     var showColorPicker by remember(initialEvent) { mutableStateOf(false) }
 
     val days = listOf("27일(토)", "28일(일)", "29일(월)")
+    val totalS = startDayIndex * 1440 + startMins
+    val totalE = endDayIndex * 1440 + endMins
+    val dur = totalE - totalS
 
-    // 절대 시간 분(Minutes) 계산
-    val totalStart = startDayIndex * 24 * 60 + startMins
-    val totalEnd = endDayIndex * 24 * 60 + endMins
-    val durationMins = totalEnd - totalStart
+    var dEIdx = endDayIndex
+    var dEM = endMins
+    if (endMins == 0 && endDayIndex > 0) { dEIdx = endDayIndex - 1; dEM = 1440 }
 
-    // 🔥 D일 00:00을 D-1일 24:00으로 표기하기 위한 변환 로직
-    var displayEndDayIdx = endDayIndex
-    var displayEndM = endMins
-    if (endMins == 0 && endDayIndex > 0) {
-        displayEndDayIdx = endDayIndex - 1
-        displayEndM = 24 * 60
-    }
-
-    val startH = String.format("%02d", startMins / 60)
-    val startM = String.format("%02d", startMins % 60)
-
-    val durH = (maxOf(0, durationMins) / 60).toString()
-    val durM = String.format("%02d", maxOf(0, durationMins) % 60)
-
-    val endH = String.format("%02d", displayEndM / 60)
-    val endM = String.format("%02d", displayEndM % 60)
-
-    val hourOptions = (0..23).map { String.format("%02d", it) }
-    val endHourOptions = (0..24).map { String.format("%02d", it) } // 종료 시간에는 24시 포함
-    val durHourOptions = (0..48).map { it.toString() }
-    val minuteOptions = (0..55 step 5).map { String.format("%02d", it) }
-    val endMinuteOptions = if (displayEndM / 60 == 24) listOf("00") else minuteOptions // 24시일 땐 무조건 00분만 선택 가능
-
-    // 🔥 누락되었던 팔레트 복구!
     val colorPalette = listOf(
         Color(0xFF95A5A6), Color(0xFFE74C3C), Color(0xFFE67E22), Color(0xFFF1C40F),
         Color(0xFF2ECC71), Color(0xFF1ABC9C), Color(0xFF3498DB), Color(0xFF9B59B6),
         Color(0xFF34495E), Color(0xFFFF4081), Color(0xFF69F0AE), Color(0xFFBCAAA4)
     )
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.White).pointerInput(Unit) { detectTapGestures { } }) {
+    Box(modifier = Modifier.fillMaxSize().background(Color.White).pointerInput(Unit){}) {
         Column(modifier = Modifier.fillMaxSize().padding(24.dp).padding(top = 40.dp)) {
-
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                BasicTextField(
-                    value = title,
-                    onValueChange = { if (it.length <= 20) title = it },
-                    textStyle = TextStyle(fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.Black),
-                    modifier = Modifier.weight(1f),
-                    decorationBox = { innerTextField ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(modifier = Modifier.weight(1f)) {
-                                if (title.isEmpty()) Text("일정 제목", color = Color.LightGray, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-                                innerTextField()
-                            }
-                            Icon(painterResource(id = R.drawable.popup_stretch), contentDescription = "수정", tint = Color.LightGray, modifier = Modifier.size(20.dp).padding(start = 4.dp))
-                        }
-                    }
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BasicTextField(value = title, onValueChange = { if (it.length <= 20) title = it }, textStyle = TextStyle(fontSize = 28.sp, fontWeight = FontWeight.Bold), modifier = Modifier.weight(1f), decorationBox = { if (title.isEmpty()) Text("일정 제목", color = Color.LightGray, fontSize = 28.sp, fontWeight = FontWeight.Bold); it() })
                 Spacer(modifier = Modifier.width(16.dp))
                 Box(modifier = Modifier.size(32.dp).background(color, CircleShape).border(1.dp, Color.LightGray, CircleShape).clickable { showColorPicker = true })
             }
-            Text(text = "(${title.length}/20)", fontSize = 12.sp, color = Color.Gray, modifier = Modifier.align(Alignment.End))
-
+            Text("(${title.length}/20)", fontSize = 12.sp, modifier = Modifier.align(Alignment.End))
             Spacer(modifier = Modifier.height(32.dp))
-
-            Text("진행 시간", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.DarkGray)
+            Text("진행 시간", fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(16.dp))
-
-            // ================= START TIME =================
             Row(verticalAlignment = Alignment.CenterVertically) {
-                DropdownSelector(value = days[startDayIndex], options = days, onSelect = { d ->
-                    val newDay = days.indexOf(d)
-                    val newTotalStart = newDay * 24 * 60 + startMins
-
-                    val error = if (newTotalStart >= totalEnd) "시작 시간이 종료 시간보다 늦을 수 없습니다!"
-                    else if ((totalEnd - 1) / (24 * 60) - newDay >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
-                    else ""
-                    if (error.isNotEmpty()) errorMessage = error
-                    else { startDayIndex = newDay; errorMessage = "" }
-                }, modifier = Modifier.weight(1.2f))
-                Spacer(modifier = Modifier.width(8.dp))
-                Row(modifier = Modifier.weight(1.5f), verticalAlignment = Alignment.CenterVertically) {
-                    DropdownSelector(value = startH, options = hourOptions, onSelect = { h ->
-                        val newTotalStart = startDayIndex * 24 * 60 + h.toInt() * 60 + (startMins % 60)
-
-                        val error = if (newTotalStart >= totalEnd) "시작 시간이 종료 시간보다 늦을 수 없습니다!"
-                        else if ((totalEnd - 1) / (24 * 60) - startDayIndex >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
-                        else ""
-                        if (error.isNotEmpty()) errorMessage = error
-                        else { startMins = h.toInt() * 60 + (startMins % 60); errorMessage = "" }
-                    }, modifier = Modifier.weight(1f))
-                    Text(":", modifier = Modifier.padding(horizontal = 4.dp), fontWeight = FontWeight.Bold)
-                    DropdownSelector(value = startM, options = minuteOptions, onSelect = { m ->
-                        val newTotalStart = startDayIndex * 24 * 60 + (startMins / 60) * 60 + m.toInt()
-                        if (newTotalStart >= totalEnd) errorMessage = "시작 시간이 종료 시간보다 늦을 수 없습니다!"
-                        else { startMins = (startMins / 60) * 60 + m.toInt(); errorMessage = "" }
-                    }, modifier = Modifier.weight(1f))
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("부터", fontSize = 16.sp, modifier = Modifier.width(40.dp))
+                DropdownSelector(days[startDayIndex], days, { val n = days.indexOf(it); if (n * 1440 + startMins >= totalE) errorMessage = "시작이 종료보다 늦을 수 없습니다!" else { startDayIndex = n; errorMessage = "" } }, Modifier.weight(1.2f))
+                Spacer(Modifier.width(8.dp))
+                DropdownSelector(String.format("%02d", startMins/60), (0..23).map { String.format("%02d", it) }, { val h = it.toInt(); if (startDayIndex*1440 + h*60 + startMins%60 >= totalE) errorMessage = "시작이 종료보다 늦을 수 없습니다!" else { startMins = h*60 + startMins%60; errorMessage = "" } }, Modifier.weight(0.7f))
+                Text(":", Modifier.padding(4.dp))
+                DropdownSelector(String.format("%02d", startMins%60), (0..55 step 5).map { String.format("%02d", it) }, { val m = it.toInt(); if (startDayIndex*1440 + (startMins/60)*60 + m >= totalE) errorMessage = "시작이 종료보다 늦을 수 없습니다!" else { startMins = (startMins/60)*60 + m; errorMessage = "" } }, Modifier.weight(0.7f))
+                Text("부터", Modifier.padding(start = 8.dp))
             }
             Spacer(modifier = Modifier.height(12.dp))
-
-            // ================= DURATION =================
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Spacer(modifier = Modifier.weight(1.2f))
-                Spacer(modifier = Modifier.width(8.dp))
-                Row(modifier = Modifier.weight(1.5f), verticalAlignment = Alignment.CenterVertically) {
-                    DropdownSelector(value = durH, options = durHourOptions, onSelect = { h ->
-                        val newDur = h.toInt() * 60 + (durationMins % 60)
-                        val newTotalEnd = totalStart + maxOf(5, newDur)
-
-                        val error = if (newTotalEnd > 3 * 24 * 60) "마지막 요일의 24시를 초과할 수 없습니다!"
-                        else if ((newTotalEnd - 1) / (24 * 60) - startDayIndex >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
-                        else ""
-                        if (error.isNotEmpty()) errorMessage = error
-                        else {
-                            endDayIndex = newTotalEnd / (24 * 60)
-                            endMins = newTotalEnd % (24 * 60)
-                            errorMessage = ""
-                        }
-                    }, modifier = Modifier.weight(1f))
-                    Text(":", modifier = Modifier.padding(horizontal = 4.dp), fontWeight = FontWeight.Bold)
-                    DropdownSelector(value = durM, options = minuteOptions, onSelect = { m ->
-                        val newDur = (durationMins / 60) * 60 + m.toInt()
-                        val newTotalEnd = totalStart + maxOf(5, newDur)
-
-                        val error = if (newTotalEnd > 3 * 24 * 60) "마지막 요일의 24시를 초과할 수 없습니다!"
-                        else if ((newTotalEnd - 1) / (24 * 60) - startDayIndex >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
-                        else ""
-                        if (error.isNotEmpty()) errorMessage = error
-                        else {
-                            endDayIndex = newTotalEnd / (24 * 60)
-                            endMins = newTotalEnd % (24 * 60)
-                            errorMessage = ""
-                        }
-                    }, modifier = Modifier.weight(1f))
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("동안", fontSize = 16.sp, modifier = Modifier.width(40.dp))
+                DropdownSelector(days[dEIdx], days, { val n = days.indexOf(it); val nE = n*1440 + dEM; if (nE <= totalS) errorMessage = "종료가 시작보다 빨라야 합니다!" else if ((nE-1)/1440 - startDayIndex >= 2) errorMessage = "최대 2일만 가능합니다!" else { endDayIndex = nE/1440; endMins = nE%1440; errorMessage = "" } }, Modifier.weight(1.2f))
+                Spacer(Modifier.width(8.dp))
+                DropdownSelector(String.format("%02d", dEM/60), (0..24).map { String.format("%02d", it) }, { val h = it.toInt(); val nE = dEIdx*1440 + h*60 + (if(h==24) 0 else dEM%60); if (nE <= totalS) errorMessage = "종료가 시작보다 빨라야 합니다!" else { endDayIndex = nE/1440; endMins = nE%1440; errorMessage = "" } }, Modifier.weight(0.7f))
+                Text(":", Modifier.padding(4.dp))
+                DropdownSelector(String.format("%02d", dEM%60), (if(dEM/60==24) listOf("00") else (0..55 step 5).map { String.format("%02d", it) }), { val m = it.toInt(); val nE = dEIdx*1440 + (dEM/60)*60 + m; if (nE <= totalS) errorMessage = "종료가 시작보다 빨라야 합니다!" else { endDayIndex = nE/1440; endMins = nE%1440; errorMessage = "" } }, Modifier.weight(0.7f))
+                Text("까지", Modifier.padding(start = 8.dp))
             }
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // ================= END TIME =================
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                DropdownSelector(value = days[displayEndDayIdx], options = days, onSelect = { d ->
-                    val selectedDay = days.indexOf(d)
-                    val newTotalEnd = selectedDay * 24 * 60 + displayEndM
-
-                    val error = if (selectedDay < startDayIndex) "종료 일수는 시작 일수보다 빠를 수 없습니다!"
-                    else if (newTotalEnd <= totalStart) "종료 시간은 시작 시간보다 늦어야 합니다!"
-                    else if (newTotalEnd > 3 * 24 * 60) "마지막 요일의 24시를 초과할 수 없습니다!"
-                    else if ((newTotalEnd - 1) / (24 * 60) - startDayIndex >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
-                    else ""
-                    if (error.isNotEmpty()) errorMessage = error
-                    else {
-                        endDayIndex = newTotalEnd / (24 * 60)
-                        endMins = newTotalEnd % (24 * 60)
-                        errorMessage = ""
-                    }
-                }, modifier = Modifier.weight(1.2f))
-                Spacer(modifier = Modifier.width(8.dp))
-                Row(modifier = Modifier.weight(1.5f), verticalAlignment = Alignment.CenterVertically) {
-                    DropdownSelector(value = endH, options = endHourOptions, onSelect = { h ->
-                        val hInt = h.toInt()
-                        val mInt = if (hInt == 24) 0 else (displayEndM % 60)
-                        val newTotalEnd = displayEndDayIdx * 24 * 60 + hInt * 60 + mInt
-
-                        val error = if (newTotalEnd <= totalStart) "종료 시간은 시작 시간보다 늦어야 합니다!"
-                        else if (newTotalEnd > 3 * 24 * 60) "마지막 요일의 24시를 초과할 수 없습니다!"
-                        else if ((newTotalEnd - 1) / (24 * 60) - startDayIndex >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
-                        else ""
-                        if (error.isNotEmpty()) errorMessage = error
-                        else {
-                            endDayIndex = newTotalEnd / (24 * 60)
-                            endMins = newTotalEnd % (24 * 60)
-                            errorMessage = ""
-                        }
-                    }, modifier = Modifier.weight(1f))
-                    Text(":", modifier = Modifier.padding(horizontal = 4.dp), fontWeight = FontWeight.Bold)
-                    DropdownSelector(value = endM, options = endMinuteOptions, onSelect = { m ->
-                        val hInt = displayEndM / 60
-                        val newTotalEnd = displayEndDayIdx * 24 * 60 + hInt * 60 + m.toInt()
-
-                        val error = if (newTotalEnd <= totalStart) "종료 시간은 시작 시간보다 늦어야 합니다!"
-                        else if (newTotalEnd > 3 * 24 * 60) "마지막 요일의 24시를 초과할 수 없습니다!"
-                        else if ((newTotalEnd - 1) / (24 * 60) - startDayIndex >= 2) "일정은 최대 2일에 걸쳐서만 설정할 수 있습니다!"
-                        else ""
-                        if (error.isNotEmpty()) errorMessage = error
-                        else {
-                            endDayIndex = newTotalEnd / (24 * 60)
-                            endMins = newTotalEnd % (24 * 60)
-                            errorMessage = ""
-                        }
-                    }, modifier = Modifier.weight(1f))
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("까지", fontSize = 16.sp, modifier = Modifier.width(40.dp))
-            }
-
-            if (errorMessage.isNotEmpty()) {
-                Text(text = errorMessage, color = Color.Red, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            Text("장소", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.DarkGray)
-            Spacer(modifier = Modifier.height(8.dp))
-            BasicTextField(
-                value = location, onValueChange = { if (it.length <= 20) location = it },
-                textStyle = TextStyle(fontSize = 16.sp, color = Color.Black),
-                modifier = Modifier.fillMaxWidth().background(Color(0xFFEEEEEE), RoundedCornerShape(8.dp)).padding(16.dp),
-                decorationBox = { inner -> if (location.isEmpty()) Text("장소를 입력하세요", color = Color.Gray) else inner() }
-            )
-            Text("(${location.length}/20)", fontSize = 12.sp, color = Color.Gray, modifier = Modifier.align(Alignment.End).padding(top = 4.dp))
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Text("메모", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.DarkGray)
-            Spacer(modifier = Modifier.height(8.dp))
-            BasicTextField(
-                value = memo, onValueChange = { if (it.length <= 20) memo = it },
-                textStyle = TextStyle(fontSize = 16.sp, color = Color.Black),
-                modifier = Modifier.fillMaxWidth().background(Color(0xFFEEEEEE), RoundedCornerShape(8.dp)).padding(16.dp),
-                decorationBox = { inner -> if (memo.isEmpty()) Text("간단한 메모를 입력하세요", color = Color.Gray) else inner() }
-            )
-            Text("(${memo.length}/20)", fontSize = 12.sp, color = Color.Gray, modifier = Modifier.align(Alignment.End).padding(top = 4.dp))
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Box(modifier = Modifier.weight(1f).background(Color(0xFFE0E0E0), RoundedCornerShape(12.dp)).clickable { onDismiss() }.padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
-                    Text("취소", color = Color.Red, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                }
-                Box(modifier = Modifier.weight(1f).background(Color(0xFFE0E0E0), RoundedCornerShape(12.dp)).clickable {
-                    val finalDesc = listOf(location.trim(), memo.trim()).filter { it.isNotEmpty() }.joinToString("\n")
-
-                    val finalEndHour = (totalEnd - (startDayIndex * 24 * 60)) / 60
-                    val finalEndMinute = (totalEnd - (startDayIndex * 24 * 60)) % 60
-
-                    val finalEvent = initialEvent.copy(
-                        title = title.ifEmpty { "새 일정" }, description = finalDesc,
+            if (errorMessage.isNotEmpty()) Text(errorMessage, color = Color.Red, fontSize = 12.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+            Spacer(Modifier.height(32.dp))
+            Text("장소", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            BasicTextField(location, { if (it.length <= 20) location = it }, Modifier.fillMaxWidth().background(Color(0xFFEEEEEE), RoundedCornerShape(8.dp)).padding(16.dp), decorationBox = { if (location.isEmpty()) Text("장소를 입력하세요", color = Color.Gray); it() })
+            Spacer(Modifier.height(16.dp))
+            Text("메모", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            BasicTextField(memo, { if (it.length <= 20) memo = it }, Modifier.fillMaxWidth().background(Color(0xFFEEEEEE), RoundedCornerShape(8.dp)).padding(16.dp), decorationBox = { if (memo.isEmpty()) Text("간단한 메모를 입력하세요", color = Color.Gray); it() })
+            Spacer(Modifier.weight(1f))
+            Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(16.dp)) {
+                Box(Modifier.weight(1f).background(Color(0xFFE0E0E0), RoundedCornerShape(12.dp)).clickable { onDismiss() }.padding(16.dp), Alignment.Center) { Text("취소", color = Color.Red, fontWeight = FontWeight.Bold) }
+                Box(Modifier.weight(1f).background(Color(0xFFE0E0E0), RoundedCornerShape(12.dp)).clickable {
+                    // 🔥 저장 시, 시작일을 기준으로 endHour를 상대 시간으로 자동 치환 (예: 다음날 01시 -> 25시)
+                    onSave(initialEvent.copy(
+                        title = title.ifEmpty { "새 일정" },
+                        description = listOf(location.trim(), memo.trim()).filter { it.isNotEmpty() }.joinToString("\n"),
                         dayIndex = if(initialEvent.dayIndex == -1) -1 else startDayIndex,
-                        startHour = startMins / 60, startMinute = startMins % 60,
-                        endHour = finalEndHour, endMinute = finalEndMinute,
+                        startHour = startMins/60,
+                        startMinute = startMins%60,
+                        endHour = (totalE - startDayIndex*1440)/60,
+                        endMinute = (totalE - startDayIndex*1440)%60,
                         color = color
-                    )
-                    onSave(finalEvent)
-                }.padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
-                    Text("적용", color = Color(0xFF3498DB), fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                }
+                    ))
+                }.padding(16.dp), Alignment.Center) { Text("적용", color = Color(0xFF3498DB), fontWeight = FontWeight.Bold) }
             }
         }
-
-        if (showColorPicker) {
-            Dialog(onDismissRequest = { showColorPicker = false }) {
-                Box(modifier = Modifier.background(Color.White, RoundedCornerShape(16.dp)).padding(24.dp)) {
-                    Column {
-                        Text("색상 선택", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
-                        LazyVerticalGrid(columns = GridCells.Fixed(4), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            items(colorPalette) { c ->
-                                Box(modifier = Modifier.size(48.dp).background(c, CircleShape).border(if (c == color) 3.dp else 0.dp, if (c == color) Color.DarkGray else Color.Transparent, CircleShape).clickable { color = c; showColorPicker = false })
-                            }
-                        }
+        if (showColorPicker) Dialog(onDismissRequest = { showColorPicker = false }) {
+            Box(Modifier.background(Color.White, RoundedCornerShape(16.dp)).padding(24.dp)) {
+                Column {
+                    Text("색상 선택", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
+                    LazyVerticalGrid(columns = GridCells.Fixed(4), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        items(colorPalette) { c -> Box(Modifier.size(48.dp).background(c, CircleShape).border(if (c == color) 3.dp else 0.dp, Color.DarkGray, CircleShape).clickable { color = c; showColorPicker = false }) }
                     }
                 }
             }
