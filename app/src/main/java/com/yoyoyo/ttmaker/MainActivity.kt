@@ -1159,7 +1159,7 @@ fun EventBlockItem(
                     modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("놓아서 다음 날로 확장", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text("다음 날로 확장", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     Box(modifier = Modifier.width(30.dp).height(4.dp).background(Color.White, CircleShape))
                 }
@@ -1170,7 +1170,7 @@ fun EventBlockItem(
                 ) {
                     Box(modifier = Modifier.width(30.dp).height(4.dp).background(Color.White, CircleShape))
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text("놓아서 이전 날로 확장", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text("이전 날로 확장", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             } else {
                 // 🔥 v0.52b: 분할 블록일 경우 해당되는 핸들만 렌더링
