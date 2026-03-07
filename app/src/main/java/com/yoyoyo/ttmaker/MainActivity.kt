@@ -35,6 +35,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -84,6 +86,8 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
 
 const val snapIntervalMins = 15
 
@@ -110,7 +114,7 @@ data class EventData(
 )
 
 data class GridPopupInfo(val tapOffset: IntOffset, val dayIndex: Int, val startHour: Int, val startMinute: Int)
-data class OverlapInfo(val newEvent: EventData, val overlappingEvents: List<EventData>)
+data class OverlapInfo(val newEvents: List<EventData>, val overlappingEvents: List<EventData>)
 data class PreviewResult(val events: List<EventData>, val freeX: Float? = null, val freeY: Float? = null, val isMagneticSnap: Boolean = true)
 
 val initialSampleEvents = listOf(
@@ -131,6 +135,9 @@ val initialUnassignedEvents = listOf(
 // ==========================================
 // 2. 메인 화면
 // ==========================================
+// ==========================================
+// 2. 메인 화면
+// ==========================================
 @Composable
 fun YoyoTimetableScreen() {
     val density = LocalDensity.current
@@ -138,12 +145,16 @@ fun YoyoTimetableScreen() {
     var events by remember { mutableStateOf(initialSampleEvents) }
     var unassignedList by remember { mutableStateOf(initialUnassignedEvents) }
 
-    // 1️⃣ 모든 상태(State) 변수들을 제일 먼저 선언합니다!
     var historyStack by remember { mutableStateOf(listOf<Pair<List<EventData>, List<EventData>>>()) }
 
     var selectedEvent by remember { mutableStateOf<EventData?>(null) }
-    var copiedEvent by remember { mutableStateOf<EventData?>(null) }
     var overlapDialogInfo by remember { mutableStateOf<OverlapInfo?>(null) }
+
+    var selectedEventIds by remember { mutableStateOf(emptySet<String>()) }
+    var copiedEventsList by remember { mutableStateOf(emptyList<EventData>()) }
+
+    // 🔥 수정 1: 전체화면 Dialog 대신 좌표 기반 미니 팝업을 띄우기 위한 상태
+    var multiSelectPopupOffset by remember { mutableStateOf<IntOffset?>(null) }
 
     var currentMode by remember { mutableStateOf("NORMAL") }
     var activeEvent by remember { mutableStateOf<EventData?>(null) }
@@ -168,7 +179,6 @@ fun YoyoTimetableScreen() {
     var itemBounds by remember { mutableStateOf(mapOf<String, Rect>()) }
     val currentItemBounds by rememberUpdatedState(itemBounds)
 
-    // 2️⃣ 변수 선언이 모두 끝난 아래쪽에 함수를 배치해야 에러가 나지 않습니다!
     fun saveState() {
         historyStack = (historyStack + Pair(events.toList(), unassignedList.toList())).takeLast(30)
     }
@@ -177,19 +187,16 @@ fun YoyoTimetableScreen() {
         if (historyStack.isNotEmpty()) {
             val prevState = historyStack.last()
             historyStack = historyStack.dropLast(1)
-
-            // 이전 상태로 완벽 복구
             events = prevState.first
             unassignedList = prevState.second
-
-            // 혹시나 블록을 조작하던 중에 되돌렸을 경우를 대비한 안전장치
             currentMode = "NORMAL"
             activeEvent = null
             selectedEvent = null
+            selectedEventIds = emptySet()
+            multiSelectPopupOffset = null
         }
     }
 
-    // 3️⃣ 화면 로직 시작
     LaunchedEffect(currentMode, isExternalDragging) {
         if (currentMode != "NORMAL" || isExternalDragging) selectedEvent = null
     }
@@ -204,15 +211,17 @@ fun YoyoTimetableScreen() {
                 gridHeightPx = it.size.height.toFloat()
             }) {
                 TimetableGrid(
-                    events = events, selectedEvent = selectedEvent, copiedEvent = copiedEvent,
-                    currentMode = currentMode, activeEvent = activeEvent,
+                    events = events, selectedEvent = selectedEvent, copiedEvents = copiedEventsList,
+                    currentMode = currentMode, activeEvent = activeEvent, selectedEventIds = selectedEventIds,
                     gridGlobalX = gridGlobalX, gridGlobalY = gridGlobalY, gridHeightPx = gridHeightPx,
                     verticalScrollState = verticalScrollState, horizontalScrollState = horizontalScrollState,
                     scale = scale, onScaleChange = { scale = it }, hourHeight = hourHeight,
                     isExternalDragging = isExternalDragging, externalDragEvent = externalDragEvent, externalDragPos = externalDragPos, externalDropSignal = externalDropSignal,
                     onExternalMagneticSnapChange = { isExternalMagneticSnap = it },
+                    onMultiSelectChange = { newSelection -> selectedEventIds = newSelection },
+                    onShowMultiSelectPopup = { offset -> multiSelectPopupOffset = offset },
                     onExternalDrop = { updatedEvents, droppedId ->
-                        saveState() // 🔥 미배정 -> 시간표 이동 전 저장
+                        saveState()
                         events = updatedEvents
                         unassignedList = unassignedList.filter { it.id != droppedId }
                         isExternalDragging = false
@@ -225,7 +234,7 @@ fun YoyoTimetableScreen() {
                         externalDragPos = null
                     },
                     onEventUnassigned = { eventToUnassign ->
-                        saveState() // 🔥 시간표 -> 미배정 이동(삭제) 전 저장
+                        saveState()
                         events = events.filter { it.id != eventToUnassign.id }
                         val resetEvent = eventToUnassign.copy(startHour = 0, startMinute = 0, endHour = 1, endMinute = 0, dayIndex = -1)
                         unassignedList = unassignedList + resetEvent
@@ -236,42 +245,65 @@ fun YoyoTimetableScreen() {
                     onEventLongClick = { event -> selectedEvent = event },
                     onEventDeselect = { selectedEvent = null },
                     onEventClick = { event -> editingEvent = event },
-                    onEventCopy = { eventToCopy -> copiedEvent = eventToCopy; selectedEvent = null },
-                    onEventMoveStart = { eventToMove -> currentMode = "MOVE"; activeEvent = eventToMove; selectedEvent = null },
+                    onEventCopy = { eventToCopy -> copiedEventsList = listOf(eventToCopy); selectedEvent = null },
+                    onEventMoveStart = { eventToMove -> currentMode = if (currentMode == "MULTI_MOVE") "MULTI_MOVE" else "MOVE"; activeEvent = eventToMove; selectedEvent = null },
                     onEventStretchStart = { eventToStretch -> currentMode = "STRETCH"; activeEvent = eventToStretch; selectedEvent = null },
                     onEventActionComplete = { updatedEvents ->
-                        saveState() // 🔥 시간표 내 이동/길이조절 완료 전 저장
+                        saveState()
                         events = updatedEvents
-                        if (currentMode == "MOVE") { currentMode = "NORMAL"; activeEvent = null }
-                        else if (currentMode == "STRETCH") { activeEvent = updatedEvents.find { it.id == activeEvent?.id } }
+                        if (currentMode == "MOVE" || currentMode == "MULTI_MOVE") {
+                            currentMode = "NORMAL"
+                            activeEvent = null
+                            selectedEventIds = emptySet()
+                        } else if (currentMode == "STRETCH") {
+                            activeEvent = updatedEvents.find { it.id == activeEvent?.id }
+                        }
                     },
                     onEventActionInvalid = { activeEvent = activeEvent?.copy() },
-                    onActionCancel = { currentMode = "NORMAL"; activeEvent = null; selectedEvent = null },
+                    onActionCancel = {
+                        currentMode = "NORMAL"
+                        activeEvent = null
+                        selectedEvent = null
+                        selectedEventIds = emptySet()
+                        multiSelectPopupOffset = null
+                    },
                     onEventPaste = { dayIndex, startHour, startMinute ->
-                        copiedEvent?.let { copied ->
-                            val durationMins = (copied.endHour * 60 + copied.endMinute) - (copied.startHour * 60 + copied.startMinute)
-                            val newStartMins = startHour * 60 + startMinute
-                            val newEndMins = newStartMins + durationMins
+                        if (copiedEventsList.isNotEmpty()) {
+                            val minOldAbs = copiedEventsList.minOf { it.dayIndex * 1440 + it.startHour * 60 + it.startMinute }
+                            val newAnchorAbs = dayIndex * 1440 + startHour * 60 + startMinute
+                            val deltaAbs = newAnchorAbs - minOldAbs
 
-                            val newEvent = copied.copy(
-                                startHour = newStartMins / 60, startMinute = newStartMins % 60,
-                                endHour = newEndMins / 60, endMinute = newEndMins % 60,
-                                dayIndex = dayIndex, id = UUID.randomUUID().toString()
-                            )
-
-                            val newAbsStart = dayIndex * 1440 + newStartMins
-                            val newAbsEnd = dayIndex * 1440 + newEndMins
-
-                            val overlaps = events.filter { old ->
-                                val oldAbsStart = old.dayIndex * 1440 + old.startHour * 60 + old.startMinute
-                                val oldAbsEnd = old.dayIndex * 1440 + old.endHour * 60 + old.endMinute
-                                newAbsStart < oldAbsEnd && newAbsEnd > oldAbsStart
+                            val pasted = copiedEventsList.map { ev ->
+                                val oldStartAbs = ev.dayIndex * 1440 + ev.startHour * 60 + ev.startMinute
+                                val oldEndAbs = ev.dayIndex * 1440 + ev.endHour * 60 + ev.endMinute
+                                val newStartAbs = oldStartAbs + deltaAbs
+                                val dur = oldEndAbs - oldStartAbs
+                                ev.copy(
+                                    id = UUID.randomUUID().toString(),
+                                    dayIndex = newStartAbs / 1440,
+                                    startHour = (newStartAbs % 1440) / 60,
+                                    startMinute = newStartAbs % 60,
+                                    endHour = ((newStartAbs % 1440) + dur) / 60,
+                                    endMinute = ((newStartAbs % 1440) + dur) % 60
+                                )
                             }
 
-                            if (overlaps.isNotEmpty()) overlapDialogInfo = OverlapInfo(newEvent, overlaps)
-                            else {
-                                saveState() // 🔥 복사 붙여넣기 완료 전 저장
-                                events = events + newEvent
+                            // 🔥 수정 3: 다중 붙여넣기 시 모든 블록에 대해 겹침 검사
+                            val overlaps = events.filter { old ->
+                                pasted.any { newEv ->
+                                    val nS = newEv.dayIndex * 1440 + newEv.startHour * 60 + newEv.startMinute
+                                    val nE = newEv.dayIndex * 1440 + newEv.endHour * 60 + newEv.endMinute
+                                    val oS = old.dayIndex * 1440 + old.startHour * 60 + old.startMinute
+                                    val oE = old.dayIndex * 1440 + old.endHour * 60 + old.endMinute
+                                    nS < oE && nE > oS
+                                }
+                            }
+
+                            if (overlaps.isNotEmpty()) {
+                                overlapDialogInfo = OverlapInfo(pasted, overlaps)
+                            } else {
+                                saveState()
+                                events = events + pasted
                             }
                         }
                     },
@@ -306,30 +338,57 @@ fun YoyoTimetableScreen() {
                 }
             }
 
-            // 하단 메뉴 바
             Row(modifier = Modifier.fillMaxWidth().background(Color.White).navigationBarsPadding().padding(bottom = 8.dp).height(60.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                // 🔥 Undo 아이콘 로직 연결 및 색상 반응 추가
-                Icon(
-                    painter = painterResource(id = R.drawable.under_undo),
-                    contentDescription = "되돌리기",
-                    tint = if (historyStack.isNotEmpty()) Color.DarkGray else Color.LightGray,
-                    modifier = Modifier.size(22.dp).clickable(enabled = historyStack.isNotEmpty()) { undo() }
-                )
-                Icon(painter = painterResource(id = R.drawable.under_select), contentDescription = "드래그 모드", modifier = Modifier.size(22.dp))
+                Icon(painter = painterResource(id = R.drawable.under_undo), contentDescription = "되돌리기", tint = if (historyStack.isNotEmpty()) Color.DarkGray else Color.LightGray, modifier = Modifier.size(22.dp).clickable(enabled = historyStack.isNotEmpty()) { undo() })
+
+                val isSelectMode = currentMode == "SELECT" || currentMode == "MULTI_MOVE"
+                Icon(painter = painterResource(id = R.drawable.under_select), contentDescription = "다중 선택", tint = if (isSelectMode) Color(0xFF3498DB) else Color.DarkGray, modifier = Modifier.size(22.dp).clickable {
+                    if (currentMode == "NORMAL") { currentMode = "SELECT"; selectedEventIds = emptySet() }
+                    else { currentMode = "NORMAL"; selectedEventIds = emptySet(); multiSelectPopupOffset = null; activeEvent = null }
+                })
+
                 Icon(painter = painterResource(id = R.drawable.under_ai), contentDescription = "AI 챗봇", modifier = Modifier.size(22.dp))
                 Icon(painter = painterResource(id = R.drawable.under_setting), contentDescription = "설정", modifier = Modifier.size(22.dp))
-                Icon(painter = painterResource(id = R.drawable.under_done), contentDescription = "완료", modifier = Modifier.size(22.dp).clickable { currentMode = "NORMAL"; activeEvent = null; selectedEvent = null })
+                Icon(painter = painterResource(id = R.drawable.under_done), contentDescription = "완료", modifier = Modifier.size(22.dp).clickable { currentMode = "NORMAL"; activeEvent = null; selectedEvent = null; selectedEventIds = emptySet(); multiSelectPopupOffset = null })
             }
         }
 
         AnimatedVisibility(visible = currentMode != "NORMAL" || isExternalDragging, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter).padding(top = 80.dp).zIndex(50f)) {
-            Box(modifier = Modifier.shadow(8.dp, RoundedCornerShape(20.dp)).clip(RoundedCornerShape(20.dp)).background(Color(0xEE333333)).padding(horizontal = 24.dp, vertical = 12.dp)) {
+            Box(modifier = Modifier.shadow(8.dp, RoundedCornerShape(20.dp)).clip(RoundedCornerShape(20.dp)).background(if(currentMode == "SELECT") Color(0xFF3498DB) else Color(0xEE333333)).padding(horizontal = 24.dp, vertical = 12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    val text = if (currentMode == "MOVE" || isExternalDragging) "원하는 요일/시간에 부드럽게 가져다 놓으세요" else "상하단 핸들을 잡아 길이를 조절하세요"
+                    val text = when {
+                        currentMode == "SELECT" -> "드래그하여 선택하세요"
+                        currentMode == "MULTI_MOVE" -> "잡고 이동하여 전체를 옮기세요"
+                        currentMode == "MOVE" || isExternalDragging -> "원하는 요일/시간에 부드럽게 가져다 놓으세요"
+                        else -> "상하단 핸들을 잡아 길이를 조절하세요"
+                    }
                     Text(text = text, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     if (currentMode == "STRETCH") {
                         Spacer(modifier = Modifier.width(16.dp))
                         Text(text = "완료", color = Color(0xFF3498DB), fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, modifier = Modifier.clickable { currentMode = "NORMAL"; activeEvent = null; selectedEvent = null }.padding(4.dp))
+                    }
+                }
+            }
+        }
+
+        // 🔥 수정 1: 미니 형태의 다중 선택 컨텍스트 팝업
+        if (multiSelectPopupOffset != null && selectedEventIds.isNotEmpty()) {
+            Popup(alignment = Alignment.TopStart, offset = multiSelectPopupOffset!!, onDismissRequest = { multiSelectPopupOffset = null; currentMode = "NORMAL"; selectedEventIds = emptySet() }, properties = PopupProperties(focusable = true, clippingEnabled = false)) {
+                Box(modifier = Modifier.shadow(8.dp, RoundedCornerShape(12.dp)).clip(RoundedCornerShape(12.dp)).background(Color(0xFFF5F5F5)).padding(horizontal = 20.dp, vertical = 12.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(painter = painterResource(id = R.drawable.popup_copy), contentDescription = "복사", tint = Color.DarkGray, modifier = Modifier.size(24.dp).clickable {
+                            copiedEventsList = events.filter { it.id in selectedEventIds }
+                            multiSelectPopupOffset = null; currentMode = "NORMAL"; selectedEventIds = emptySet()
+                        })
+                        Icon(painter = painterResource(id = R.drawable.popup_move), contentDescription = "이동", tint = Color.DarkGray, modifier = Modifier.size(24.dp).clickable {
+                            currentMode = "MULTI_MOVE"; multiSelectPopupOffset = null
+                            activeEvent = events.firstOrNull { it.id in selectedEventIds }
+                        })
+                        Icon(painter = painterResource(id = R.drawable.popup_remove), contentDescription = "삭제", tint = Color.DarkGray, modifier = Modifier.size(24.dp).clickable {
+                            saveState()
+                            events = events.filter { it.id !in selectedEventIds }
+                            multiSelectPopupOffset = null; currentMode = "NORMAL"; selectedEventIds = emptySet()
+                        })
                     }
                 }
             }
@@ -369,7 +428,7 @@ fun YoyoTimetableScreen() {
                     onDismiss = { editingEvent = null },
                     onSave = { savedEvent ->
                         if (savedEvent.dayIndex == -1) {
-                            saveState() // 🔥 수정 창에서 저장하기 전 저장
+                            saveState()
                             unassignedList = unassignedList.filter { it.id != savedEvent.id } + savedEvent
                             events = events.filter { it.id != savedEvent.id }
                             editingEvent = null
@@ -384,10 +443,10 @@ fun YoyoTimetableScreen() {
                             }
 
                             if (overlaps.isNotEmpty()) {
-                                overlapDialogInfo = OverlapInfo(savedEvent, overlaps)
+                                overlapDialogInfo = OverlapInfo(listOf(savedEvent), overlaps)
                                 editingEvent = null
                             } else {
-                                saveState() // 🔥 수정 창에서 저장하기 전 저장
+                                saveState()
                                 events = events.filter { it.id != savedEvent.id } + savedEvent
                                 unassignedList = unassignedList.filter { it.id != savedEvent.id }
                                 editingEvent = null
@@ -407,52 +466,146 @@ fun YoyoTimetableScreen() {
             title = { Text("이벤트가 겹칩니다", fontWeight = FontWeight.Bold) },
             text = { Text("기존 일정을 어떻게 처리할까요?") },
             confirmButton = {
+                // 🔥 수정 3: 다중 이벤트 덮어쓰기 로직 완벽 반영
                 TextButton(onClick = {
-                    saveState() // 🔥 덮어쓰기 결단 내리기 전 저장
+                    saveState()
                     val updated = events.toMutableList()
-                    updated.removeAll { it.id == info.newEvent.id }
-                    updated.removeAll { old -> info.overlappingEvents.any { it.id == old.id } }
+                    updated.removeAll { old -> info.newEvents.any { it.id == old.id } }
 
-                    val newAbsStart = info.newEvent.dayIndex * 1440 + info.newEvent.startHour * 60 + info.newEvent.startMinute
-                    val newAbsEnd = info.newEvent.dayIndex * 1440 + info.newEvent.endHour * 60 + info.newEvent.endMinute
+                    if (info.newEvents.size == 1) {
+                        val newEv = info.newEvents.first()
+                        val newAbsStart = newEv.dayIndex * 1440 + newEv.startHour * 60 + newEv.startMinute
+                        val newAbsEnd = newEv.dayIndex * 1440 + newEv.endHour * 60 + newEv.endMinute
+                        updated.removeAll { old -> info.overlappingEvents.any { it.id == old.id } }
 
-                    info.overlappingEvents.forEach { old ->
-                        val oldAbsStart = old.dayIndex * 1440 + old.startHour * 60 + old.startMinute
-                        val oldAbsEnd = old.dayIndex * 1440 + old.endHour * 60 + old.endMinute
+                        info.overlappingEvents.forEach { old ->
+                            val oldAbsStart = old.dayIndex * 1440 + old.startHour * 60 + old.startMinute
+                            val oldAbsEnd = old.dayIndex * 1440 + old.endHour * 60 + old.endMinute
 
-                        if (oldAbsStart in newAbsStart until newAbsEnd && oldAbsEnd > newAbsEnd) {
-                            val relStartMins = newAbsEnd - (old.dayIndex * 1440)
-                            updated.add(old.copy(startHour = relStartMins / 60, startMinute = relStartMins % 60, id = UUID.randomUUID().toString()))
-                        } else if (oldAbsStart < newAbsStart && oldAbsEnd in (newAbsStart + 1)..newAbsEnd) {
-                            val relEndMins = newAbsStart - (old.dayIndex * 1440)
-                            updated.add(old.copy(endHour = relEndMins / 60, endMinute = relEndMins % 60, id = UUID.randomUUID().toString()))
-                        } else if (oldAbsStart < newAbsStart && oldAbsEnd > newAbsEnd) {
-                            val relEndMins = newAbsStart - (old.dayIndex * 1440)
-                            val relStartMins = newAbsEnd - (old.dayIndex * 1440)
-                            updated.add(old.copy(endHour = relEndMins / 60, endMinute = relEndMins % 60, id = UUID.randomUUID().toString()))
-                            updated.add(old.copy(startHour = relStartMins / 60, startMinute = relStartMins % 60, id = UUID.randomUUID().toString()))
+                            if (oldAbsStart in newAbsStart until newAbsEnd && oldAbsEnd > newAbsEnd) {
+                                val relStartMins = newAbsEnd - (old.dayIndex * 1440)
+                                updated.add(old.copy(startHour = relStartMins / 60, startMinute = relStartMins % 60, id = UUID.randomUUID().toString()))
+                            } else if (oldAbsStart < newAbsStart && oldAbsEnd in (newAbsStart + 1)..newAbsEnd) {
+                                val relEndMins = newAbsStart - (old.dayIndex * 1440)
+                                updated.add(old.copy(endHour = relEndMins / 60, endMinute = relEndMins % 60, id = UUID.randomUUID().toString()))
+                            } else if (oldAbsStart < newAbsStart && oldAbsEnd > newAbsEnd) {
+                                val relEndMins = newAbsStart - (old.dayIndex * 1440)
+                                val relStartMins = newAbsEnd - (old.dayIndex * 1440)
+                                updated.add(old.copy(endHour = relEndMins / 60, endMinute = relEndMins % 60, id = UUID.randomUUID().toString()))
+                                updated.add(old.copy(startHour = relStartMins / 60, startMinute = relStartMins % 60, id = UUID.randomUUID().toString()))
+                            }
                         }
+                    } else {
+                        // 다중 붙여넣기 덮어쓰기의 경우, 겹친 기존 블록은 깔끔하게 통째로 삭제
+                        updated.removeAll { old -> info.overlappingEvents.any { it.id == old.id } }
                     }
-                    updated.add(info.newEvent)
+
+                    updated.addAll(info.newEvents)
                     events = updated
-                    unassignedList = unassignedList.filter { it.id != info.newEvent.id }
+                    unassignedList = unassignedList.filter { old -> info.newEvents.none { it.id == old.id } }
                     overlapDialogInfo = null
                 }) { Text("덮어쓰기", color = Color(0xFF27AE60), fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
                 Row {
                     TextButton(onClick = { overlapDialogInfo = null; currentMode = "NORMAL"; activeEvent = null }) { Text("취소", color = Color.Gray) }
+                    // 🔥 수정 3: 다중 이벤트 밀어넣기(Push) 로직
                     TextButton(onClick = {
-                        saveState() // 🔥 밀어넣기 결단 내리기 전 저장
-                        val newStart = info.newEvent.startHour * 60 + info.newEvent.startMinute
-                        events = finalizeDropWithPush(events, info.newEvent, newStart, info.newEvent.dayIndex)
-                        unassignedList = unassignedList.filter { it.id != info.newEvent.id }
+                        saveState()
+                        if (info.newEvents.size == 1) {
+                            val newEv = info.newEvents.first()
+                            val newStart = newEv.startHour * 60 + newEv.startMinute
+                            events = finalizeDropWithPush(events, newEv, newStart, newEv.dayIndex)
+                        } else {
+                            // 다중 붙여넣기 시 붙여넣은 블록들의 전체 범위를 하나로 취급해 밀어냅니다!
+                            val minAbs = info.newEvents.minOf { it.dayIndex * 1440 + it.startHour * 60 + it.startMinute }
+                            val maxAbs = info.newEvents.maxOf { it.dayIndex * 1440 + it.endHour * 60 + it.endMinute }
+                            val duration = maxAbs - minAbs
+                            val movingCenter = minAbs + duration / 2.0f
+
+                            val others = events.filter { old -> info.newEvents.none { it.id == old.id } }
+                            val pushUpList = others.filter { old ->
+                                val oldCenter = (old.dayIndex * 1440 + old.startHour * 60 + old.startMinute) + ((old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)) / 2.0f
+                                oldCenter < movingCenter
+                            }.sortedByDescending { it.dayIndex * 1440 + it.endHour * 60 + it.endMinute }
+
+                            val pushDownList = others.filter { old ->
+                                val oldCenter = (old.dayIndex * 1440 + old.startHour * 60 + old.startMinute) + ((old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)) / 2.0f
+                                oldCenter >= movingCenter
+                            }.sortedBy { it.dayIndex * 1440 + it.startHour * 60 + it.startMinute }
+
+                            var currentUpperBoundary = minAbs
+                            val finalizedEvents = mutableListOf<EventData>()
+                            for (old in pushUpList) {
+                                val oDur = (old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)
+                                val sEnd = minOf(old.dayIndex * 1440 + old.endHour * 60 + old.endMinute, currentUpperBoundary)
+                                val sStart = maxOf(0, sEnd - oDur)
+                                val dIdx = sStart / 1440
+                                finalizedEvents.add(old.copy(dayIndex = dIdx, startHour = (sStart % 1440) / 60, startMinute = sStart % 60, endHour = (sEnd - dIdx * 1440) / 60, endMinute = sEnd % 60))
+                                currentUpperBoundary = sStart
+                            }
+
+                            var currentLowerBoundary = maxAbs
+                            for (old in pushDownList) {
+                                val oDur = (old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)
+                                val sStart = maxOf(old.dayIndex * 1440 + old.startHour * 60 + old.startMinute, currentLowerBoundary)
+                                val sEnd = minOf(4320, sStart + oDur)
+                                val dIdx = sStart / 1440
+                                finalizedEvents.add(old.copy(dayIndex = dIdx, startHour = (sStart % 1440) / 60, startMinute = sStart % 60, endHour = (sEnd - dIdx * 1440) / 60, endMinute = sEnd % 60))
+                                currentLowerBoundary = sEnd
+                            }
+                            finalizedEvents.addAll(info.newEvents)
+                            events = finalizedEvents
+                        }
+
+                        unassignedList = unassignedList.filter { old -> info.newEvents.none { it.id == old.id } }
                         overlapDialogInfo = null
                     }) { Text("밀어넣기", color = Color(0xFF2980B9), fontWeight = FontWeight.Bold) }
                 }
             }
         )
     }
+}
+
+// 🔥 다중 이동 시 묶음 전체의 위치를 계산해주는 전용 물리 엔진
+fun calculateMultiLivePreview(events: List<EventData>, selectedIds: Set<String>, anchorEvent: EventData, pointer: Offset, dragTouchOffset: Offset, hourHeightPx: Float, columnWidthPx: Float): PreviewResult {
+    val minuteHeightPx = hourHeightPx / 60f
+    val topPaddingPx = hourHeightPx / 2f
+
+    val exactStartMins = ((pointer.y - dragTouchOffset.y - topPaddingPx) / minuteHeightPx).toInt()
+    val hoverDayIndex = (pointer.x / columnWidthPx).toInt().coerceIn(0, 2)
+    val displayStartMins = exactStartMins
+
+    val anchorOldAbs = anchorEvent.dayIndex * 1440 + anchorEvent.startHour * 60 + anchorEvent.startMinute
+    val anchorNewAbs = hoverDayIndex * 1440 + displayStartMins
+    val deltaAbs = anchorNewAbs - anchorOldAbs
+
+    val selectedEvents = events.filter { it.id in selectedIds }
+    val minAbs = selectedEvents.minOf { it.dayIndex * 1440 + it.startHour * 60 + it.startMinute }
+    val maxAbs = selectedEvents.maxOf { it.dayIndex * 1440 + it.endHour * 60 + it.endMinute }
+
+    // 화면 밖으로 나가지 않도록 보정 (0 ~ 4320분 범위)
+    val safeDeltaAbs = deltaAbs.coerceIn(-minAbs, 4320 - maxAbs)
+
+    val previewEvents = mutableListOf<EventData>()
+    events.forEach { ev ->
+        if (ev.id in selectedIds) {
+            val oldStartAbs = ev.dayIndex * 1440 + ev.startHour * 60 + ev.startMinute
+            val oldEndAbs = ev.dayIndex * 1440 + ev.endHour * 60 + ev.endMinute
+            val newStartAbs = oldStartAbs + safeDeltaAbs
+            val dur = oldEndAbs - oldStartAbs
+            previewEvents.add(ev.copy(
+                dayIndex = newStartAbs / 1440,
+                startHour = (newStartAbs % 1440) / 60,
+                startMinute = newStartAbs % 1440 % 60,
+                endHour = ((newStartAbs % 1440) + dur) / 60,
+                endMinute = ((newStartAbs % 1440) + dur) % 60
+            ))
+        } else {
+            previewEvents.add(ev)
+        }
+    }
+    return PreviewResult(previewEvents, pointer.x - dragTouchOffset.x, pointer.y - dragTouchOffset.y, false)
 }
 
 fun calculateLivePreview(events: List<EventData>, movingEvent: EventData, pointer: Offset, dragTouchOffset: Offset, hourHeightPx: Float, columnWidthPx: Float, isExternalDrag: Boolean = false, isInsideGrid: Boolean = true): PreviewResult {
@@ -522,10 +675,8 @@ fun calculateLivePreview(events: List<EventData>, movingEvent: EventData, pointe
     return PreviewResult(finalEvents, freeX, freeY, isMagneticSnap)
 }
 
-// 🔥 미리보기는 30분만, 최종 확장은 무조건 60분으로 고정하는 스마트 물리 엔진
 fun calculateStretchPreview(
-    events: List<EventData>, activeEvent: EventData, pointerY: Float, stretchType: String, hourHeightPx: Float, dragHitPart: Int = 3,
-    isFinalDrop: Boolean = false // 🔥 현재 최종 Drop 상태인지 확인하는 변수 추가
+    events: List<EventData>, activeEvent: EventData, pointerY: Float, stretchType: String, hourHeightPx: Float, dragHitPart: Int = 3, isFinalDrop: Boolean = false
 ): PreviewResult {
     val minuteHeightPx = hourHeightPx / 60f
     val topPaddingPx = hourHeightPx / 2f
@@ -553,17 +704,11 @@ fun calculateStretchPreview(
     if (stretchType == "TOP") {
         val blocksAbove = others.filter { it.third <= activeAbsStart }.sortedByDescending { it.third }
         val limitStart = blocksAbove.sumOf { it.third - it.second }
-        val maxStartAllowed = if (oldEndRel > 1440 && dragHitPart == 1) activeEvent.dayIndex * 1440 + 1440
-        else if (oldStartRel < 0 && dragHitPart == 1) activeEvent.dayIndex * 1440
-        else activeAbsEnd - snapIntervalMins
+        val maxStartAllowed = if (oldEndRel > 1440 && dragHitPart == 1) activeEvent.dayIndex * 1440 + 1440 else if (oldStartRel < 0 && dragHitPart == 1) activeEvent.dayIndex * 1440 else activeAbsEnd - snapIntervalMins
 
         if (pointerMins < 0 && activeEvent.dayIndex > 0 && !isOriginalSplit) {
-            // 🔥 최종 드롭이면 무조건 60분 확장, 드래그 중이면 최대 30분까지만 미리보기
-            if (isFinalDrop) {
-                newAbsStart = maxOf(limitStart, activeEvent.dayIndex * 1440 - 60)
-            } else {
-                newAbsStart = maxOf(limitStart, maxOf(activeEvent.dayIndex * 1440 - 30, pointerAbsMins))
-            }
+            if (isFinalDrop) newAbsStart = maxOf(limitStart, activeEvent.dayIndex * 1440 - 60)
+            else newAbsStart = maxOf(limitStart, maxOf(activeEvent.dayIndex * 1440 - 30, pointerAbsMins))
         } else {
             newAbsStart = maxOf(limitStart, minOf(snappedAbsMins.coerceAtLeast(0), maxStartAllowed))
         }
@@ -580,17 +725,11 @@ fun calculateStretchPreview(
     } else {
         val blocksBelow = others.filter { it.second >= activeAbsEnd }.sortedBy { it.second }
         val limitEnd = 4320 - blocksBelow.sumOf { it.third - it.second }
-        val minEndAllowed = if (oldEndRel > 1440 && dragHitPart == 2) activeEvent.dayIndex * 1440 + 1440
-        else if (oldStartRel < 0 && dragHitPart == 2) activeEvent.dayIndex * 1440
-        else activeAbsStart + snapIntervalMins
+        val minEndAllowed = if (oldEndRel > 1440 && dragHitPart == 2) activeEvent.dayIndex * 1440 + 1440 else if (oldStartRel < 0 && dragHitPart == 2) activeEvent.dayIndex * 1440 else activeAbsStart + snapIntervalMins
 
         if (pointerMins > 1440 && activeEvent.dayIndex < 2 && !isOriginalSplit) {
-            // 🔥 최종 드롭이면 무조건 60분 확장(1500), 드래그 중이면 최대 30분(1470)까지만 미리보기
-            if (isFinalDrop) {
-                newAbsEnd = minOf(limitEnd, activeEvent.dayIndex * 1440 + 1500)
-            } else {
-                newAbsEnd = minOf(limitEnd, minOf(pointerAbsMins, activeEvent.dayIndex * 1440 + 1470))
-            }
+            if (isFinalDrop) newAbsEnd = minOf(limitEnd, activeEvent.dayIndex * 1440 + 1500)
+            else newAbsEnd = minOf(limitEnd, minOf(pointerAbsMins, activeEvent.dayIndex * 1440 + 1470))
         } else {
             newAbsEnd = minOf(limitEnd, maxOf(snappedAbsMins.coerceAtMost(4320), minEndAllowed))
         }
@@ -620,59 +759,19 @@ fun finalizeDropWithPush(events: List<EventData>, movingEvent: EventData, finalS
     val duration = (movingEvent.endHour * 60 + movingEvent.endMinute) - (movingEvent.startHour * 60 + movingEvent.startMinute)
     val absEnd = absStart + duration
     val movingCenter = absStart + duration / 2.0f
-
     val others = events.filter { it.id != movingEvent.id }
-
-    val hasOverlap = others.any { old ->
-        val oldAbsStart = old.dayIndex * 1440 + old.startHour * 60 + old.startMinute
-        val oldAbsEnd = old.dayIndex * 1440 + old.endHour * 60 + old.endMinute
-        maxOf(absStart, oldAbsStart) < minOf(absEnd, oldAbsEnd)
-    }
-
+    val hasOverlap = others.any { old -> maxOf(absStart, old.dayIndex * 1440 + old.startHour * 60 + old.startMinute) < minOf(absEnd, old.dayIndex * 1440 + old.endHour * 60 + old.endMinute) }
     val finalizedEvents = mutableListOf<EventData>()
 
-    if (!hasOverlap) {
-        finalizedEvents.addAll(others)
-    } else {
-        val pushUpList = others.filter { old ->
-            val oldAbsStart = old.dayIndex * 1440 + old.startHour * 60 + old.startMinute
-            val oldAbsEnd = old.dayIndex * 1440 + old.endHour * 60 + old.endMinute
-            val oldCenter = oldAbsStart + (oldAbsEnd - oldAbsStart) / 2.0f
-            oldCenter < movingCenter
-        }.sortedByDescending { it.dayIndex * 1440 + it.endHour * 60 + it.endMinute }
-
-        val pushDownList = others.filter { old ->
-            val oldAbsStart = old.dayIndex * 1440 + old.startHour * 60 + old.startMinute
-            val oldAbsEnd = old.dayIndex * 1440 + old.endHour * 60 + old.endMinute
-            val oldCenter = oldAbsStart + (oldAbsEnd - oldAbsStart) / 2.0f
-            oldCenter >= movingCenter
-        }.sortedBy { it.dayIndex * 1440 + it.startHour * 60 + it.startMinute }
-
+    if (!hasOverlap) { finalizedEvents.addAll(others) } else {
+        val pushUpList = others.filter { old -> val oldCenter = (old.dayIndex * 1440 + old.startHour * 60 + old.startMinute) + ((old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)) / 2.0f; oldCenter < movingCenter }.sortedByDescending { it.dayIndex * 1440 + it.endHour * 60 + it.endMinute }
+        val pushDownList = others.filter { old -> val oldCenter = (old.dayIndex * 1440 + old.startHour * 60 + old.startMinute) + ((old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)) / 2.0f; oldCenter >= movingCenter }.sortedBy { it.dayIndex * 1440 + it.startHour * 60 + it.startMinute }
         var currentUpperBoundary = absStart
-        for (old in pushUpList) {
-            val oDur = (old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)
-            val oldAbsEnd = old.dayIndex * 1440 + old.endHour * 60 + old.endMinute
-            val sEnd = minOf(oldAbsEnd, currentUpperBoundary)
-            val sStart = maxOf(0, sEnd - oDur)
-            val dIdx = sStart / 1440
-            finalizedEvents.add(old.copy(dayIndex = dIdx, startHour = (sStart % 1440) / 60, startMinute = sStart % 60, endHour = (sEnd - dIdx * 1440) / 60, endMinute = sEnd % 60))
-            currentUpperBoundary = sStart
-        }
-
+        for (old in pushUpList) { val oDur = (old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute); val sEnd = minOf(old.dayIndex * 1440 + old.endHour * 60 + old.endMinute, currentUpperBoundary); val sStart = maxOf(0, sEnd - oDur); val dIdx = sStart / 1440; finalizedEvents.add(old.copy(dayIndex = dIdx, startHour = (sStart % 1440) / 60, startMinute = sStart % 60, endHour = (sEnd - dIdx * 1440) / 60, endMinute = sEnd % 60)); currentUpperBoundary = sStart }
         var currentLowerBoundary = absEnd
-        for (old in pushDownList) {
-            val oDur = (old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute)
-            val oldAbsStart = old.dayIndex * 1440 + old.startHour * 60 + old.startMinute
-            val sStart = maxOf(oldAbsStart, currentLowerBoundary)
-            val sEnd = minOf(4320, sStart + oDur)
-            val dIdx = sStart / 1440
-            finalizedEvents.add(old.copy(dayIndex = dIdx, startHour = (sStart % 1440) / 60, startMinute = sStart % 60, endHour = (sEnd - dIdx * 1440) / 60, endMinute = sEnd % 60))
-            currentLowerBoundary = sEnd
-        }
+        for (old in pushDownList) { val oDur = (old.endHour * 60 + old.endMinute) - (old.startHour * 60 + old.startMinute); val sStart = maxOf(old.dayIndex * 1440 + old.startHour * 60 + old.startMinute, currentLowerBoundary); val sEnd = minOf(4320, sStart + oDur); val dIdx = sStart / 1440; finalizedEvents.add(old.copy(dayIndex = dIdx, startHour = (sStart % 1440) / 60, startMinute = sStart % 60, endHour = (sEnd - dIdx * 1440) / 60, endMinute = sEnd % 60)); currentLowerBoundary = sEnd }
     }
-
     finalizedEvents.add(movingEvent.copy(dayIndex = absStart / 1440, startHour = (absStart % 1440) / 60, startMinute = absStart % 60, endHour = (absEnd - (absStart / 1440) * 1440) / 60, endMinute = absEnd % 60))
-
     return finalizedEvents
 }
 
@@ -681,15 +780,15 @@ fun finalizeDropWithPush(events: List<EventData>, movingEvent: EventData, finalS
 // ==========================================
 @Composable
 fun TimetableGrid(
-    events: List<EventData>, selectedEvent: EventData?, copiedEvent: EventData?,
-    currentMode: String, activeEvent: EventData?, gridGlobalX: Float, gridGlobalY: Float, gridHeightPx: Float,
+    events: List<EventData>, selectedEvent: EventData?, copiedEvents: List<EventData>,
+    currentMode: String, activeEvent: EventData?, selectedEventIds: Set<String>, gridGlobalX: Float, gridGlobalY: Float, gridHeightPx: Float,
     verticalScrollState: ScrollState, horizontalScrollState: ScrollState,
     scale: Float, onScaleChange: (Float) -> Unit, hourHeight: Dp,
     isExternalDragging: Boolean, externalDragEvent: EventData?, externalDragPos: Offset?, externalDropSignal: Int,
     onExternalMagneticSnapChange: (Boolean) -> Unit, onExternalDrop: (List<EventData>, String) -> Unit, onExternalCancel: () -> Unit,
+    onMultiSelectChange: (Set<String>) -> Unit, onShowMultiSelectPopup: (IntOffset) -> Unit,
     onEventUnassigned: (EventData) -> Unit, onEventLongClick: (EventData) -> Unit, onEventDeselect: () -> Unit,
-    onEventClick: (EventData) -> Unit,
-    onEventCopy: (EventData) -> Unit, onEventMoveStart: (EventData) -> Unit, onEventStretchStart: (EventData) -> Unit,
+    onEventClick: (EventData) -> Unit, onEventCopy: (EventData) -> Unit, onEventMoveStart: (EventData) -> Unit, onEventStretchStart: (EventData) -> Unit,
     onEventActionComplete: (List<EventData>) -> Unit, onEventActionInvalid: () -> Unit, onActionCancel: () -> Unit,
     onEventPaste: (Int, Int, Int) -> Unit, onEventAdd: (Int, Int, Int) -> Unit
 ) {
@@ -697,6 +796,7 @@ fun TimetableGrid(
     val density = LocalDensity.current
     val windowInfo = LocalWindowInfo.current
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     var gridPopupInfo by remember { mutableStateOf<GridPopupInfo?>(null) }
     var dragPointer by remember { mutableStateOf<Offset?>(null) }
@@ -705,11 +805,16 @@ fun TimetableGrid(
     var selectedPartSuffix by remember { mutableStateOf<String?>(null) }
     var dragHitPart by remember { mutableIntStateOf(0) }
 
+    var selectStart by remember { mutableStateOf<Offset?>(null) }
+    var selectCurrent by remember { mutableStateOf<Offset?>(null) }
+
     val previewResult = remember(events, currentMode, activeEvent, dragPointer, dragTouchOffset, stretchType, isExternalDragging, externalDragEvent, externalDragPos, verticalScrollState.value, horizontalScrollState.value, gridGlobalX, gridGlobalY, gridHeightPx, dragHitPart, hourHeight.value) {
         val pPtr = dragPointer; val dOffset = dragTouchOffset; val sType = stretchType; val ePos = externalDragPos
         val hHPx = with(density) { hourHeight.toPx() }; val wPx = with(density) { 120.dp.toPx() }
 
-        if (currentMode == "MOVE" && activeEvent != null && pPtr != null && dOffset != null) {
+        if (currentMode == "MULTI_MOVE" && activeEvent != null && pPtr != null && dOffset != null) {
+            calculateMultiLivePreview(events, selectedEventIds, activeEvent, pPtr, dOffset, hHPx, wPx)
+        } else if (currentMode == "MOVE" && activeEvent != null && pPtr != null && dOffset != null) {
             if (pPtr.y - verticalScrollState.value > gridHeightPx + 600f) PreviewResult(events.filter { it.id != activeEvent.id }, null, null, false)
             else calculateLivePreview(events, activeEvent, pPtr, dOffset, hHPx, wPx, isExternalDrag = false, isInsideGrid = true)
         } else if (currentMode == "STRETCH" && activeEvent != null && pPtr != null && sType != null) {
@@ -724,13 +829,13 @@ fun TimetableGrid(
         } else null
     }
 
-    val displayEvents = if ((currentMode != "NORMAL" || isExternalDragging) && previewResult != null) previewResult.events else events
+    val displayEvents = if ((currentMode != "NORMAL" || isExternalDragging) && previewResult != null && currentMode != "SELECT") previewResult.events else events
 
     LaunchedEffect(previewResult) { if (isExternalDragging) onExternalMagneticSnapChange(previewResult?.isMagneticSnap == true) }
 
     LaunchedEffect(currentMode, isExternalDragging, dragPointer, externalDragPos) {
         while (currentMode != "NORMAL" || isExternalDragging) {
-            val visualY = if (isExternalDragging) externalDragPos?.let { it.y - gridGlobalY } else if (currentMode != "NORMAL") dragPointer?.let { it.y - verticalScrollState.value } else null
+            val visualY = if (isExternalDragging) externalDragPos?.let { it.y - gridGlobalY } else if (currentMode != "NORMAL" && currentMode != "SELECT") dragPointer?.let { it.y - verticalScrollState.value } else null
             if (visualY != null && gridHeightPx > 0f) {
                 var scrollDelta = 0f
                 if (visualY > 0f && visualY < 100f && verticalScrollState.value > 0) scrollDelta = -35f
@@ -766,32 +871,130 @@ fun TimetableGrid(
                 Column(modifier = Modifier.width(40.dp)) { Spacer(modifier = Modifier.height(hourHeight / 2f)); (0..24).toList().forEach { hour -> Text(text = "$hour", fontSize = 14.sp, color = Color.Gray, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().height(hourHeight).padding(top = 8.dp)) } }
 
                 Box(modifier = Modifier.width(120.dp * 3).height(hourHeight * 25.5f).horizontalScroll(horizontalScrollState)
-                    .pointerInput(currentMode, activeEvent) {
-                        if (currentMode != "NORMAL" && activeEvent != null) {
+                    .pointerInput(currentMode) {
+                        if (currentMode == "SELECT") {
+                            var localSelection = emptySet<String>()
+
+                            detectDragGestures(
+                                onDragStart = { offset ->
+                                    selectStart = offset
+                                    selectCurrent = offset
+                                    localSelection = emptySet()
+                                    onMultiSelectChange(localSelection)
+                                    gridPopupInfo = null
+                                },
+                                onDrag = { change, _ ->
+                                    if (selectStart == null) return@detectDragGestures
+                                    selectCurrent = change.position
+                                    val left = minOf(selectStart!!.x, selectCurrent!!.x)
+                                    val right = maxOf(selectStart!!.x, selectCurrent!!.x)
+                                    val top = minOf(selectStart!!.y, selectCurrent!!.y)
+                                    val bottom = maxOf(selectStart!!.y, selectCurrent!!.y)
+
+                                    val hHPx = with(density){hourHeight.toPx()}; val wPx = with(density){120.dp.toPx()}; val tp = hHPx / 2f
+
+                                    val tempSelection = events.filter { ev ->
+                                        val eL = ev.dayIndex * wPx; val eR = eL + wPx
+                                        val eT = (ev.startHour * 60 + ev.startMinute) * (hHPx / 60f) + tp
+                                        val eB = (ev.endHour * 60 + ev.endMinute) * (hHPx / 60f) + tp
+                                        left < eR && right > eL && top < eB && bottom > eT
+                                    }.map { it.id }.toSet()
+
+                                    val selectedDays = events.filter { it.id in tempSelection }.map { it.dayIndex }.distinct()
+                                    if (selectedDays.size > 1) {
+                                        Toast.makeText(context, "하나의 요일 내에서의 이벤트만 선택하세요", Toast.LENGTH_SHORT).show()
+                                        localSelection = emptySet()
+                                        selectStart = null
+                                        selectCurrent = null
+                                        onMultiSelectChange(localSelection)
+                                    } else {
+                                        localSelection = tempSelection
+                                        onMultiSelectChange(localSelection)
+                                    }
+                                },
+                                onDragEnd = {
+                                    if (localSelection.isNotEmpty() && selectCurrent != null) {
+                                        // 🔥 버그 수정 1: 스크롤을 반영하여 실제 화면(Screen) 기준의 터치 좌표 계산
+                                        val globalX = gridGlobalX - horizontalScrollState.value + selectCurrent!!.x
+                                        val globalY = gridGlobalY - verticalScrollState.value + selectCurrent!!.y
+
+                                        val popupWidthPx = with(density) { 160.dp.toPx() } // 예상되는 미니 팝업 너비
+                                        val popupHeightPx = with(density) { 60.dp.toPx() } // 예상되는 미니 팝업 높이
+                                        val screenWidth = windowInfo.containerSize.width.toFloat()
+                                        val screenHeight = windowInfo.containerSize.height.toFloat()
+
+                                        // 기본 위치: 손가락을 놓은 곳의 살짝 위, 정중앙에 예쁘게 띄우기
+                                        var finalX = globalX - (popupWidthPx / 2f)
+                                        var finalY = globalY - popupHeightPx - with(density) { 20.dp.toPx() }
+
+                                        // 🔥 버그 수정 2: 화면 밖으로 나가지 않도록 스마트 보정 (화면 우측/좌측)
+                                        if (finalX + popupWidthPx > screenWidth) finalX = screenWidth - popupWidthPx - with(density) { 16.dp.toPx() }
+                                        if (finalX < with(density) { 16.dp.toPx() }) finalX = with(density) { 16.dp.toPx() }.toFloat()
+
+                                        // 화면 위로 뚫고 나갈 경우 손가락 아래로 위치 이동, 화면 아래로 뚫고 나갈 경우 위로 이동
+                                        if (finalY < with(density) { 80.dp.toPx() }) finalY = globalY + with(density) { 20.dp.toPx() }
+                                        if (finalY + popupHeightPx > screenHeight) finalY = screenHeight - popupHeightPx - with(density) { 16.dp.toPx() }
+
+                                        onShowMultiSelectPopup(IntOffset(finalX.toInt(), finalY.toInt()))
+                                    } else {
+                                        onActionCancel()
+                                    }
+                                    selectStart = null; selectCurrent = null
+                                },
+                                onDragCancel = { onActionCancel(); selectStart = null; selectCurrent = null }
+                            )
+                        }
+                    }
+                    .pointerInput(currentMode, activeEvent, selectedEventIds) {
+                        if (currentMode == "MULTI_MOVE" || (currentMode != "NORMAL" && currentMode != "SELECT" && activeEvent != null)) {
                             detectDragGestures(
                                 onDragStart = { offset ->
                                     val wPx = with(density) { 120.dp.toPx() }; val hPxPerMin = with(density) { hourHeight.toPx() / 60f }; val topPaddingPx = with(density) { (hourHeight.value / 2f).dp.toPx() }
-                                    val startMins = activeEvent.startHour * 60 + activeEvent.startMinute; val endMins = activeEvent.endHour * 60 + activeEvent.endMinute
-                                    val isSplit = endMins > 1440
-                                    val left1 = activeEvent.dayIndex * wPx; val top1 = startMins * hPxPerMin + topPaddingPx; val bottom1 = minOf(endMins, 1440) * hPxPerMin + topPaddingPx
-                                    val hit1 = offset.x in (left1 - 40f)..(left1 + wPx + 40f) && offset.y in (top1 - 40f)..(bottom1 + 40f)
-                                    var hit2 = false; var top2 = 0f; var bottom2 = 0f
-                                    if (isSplit && activeEvent.dayIndex < 2) {
-                                        val left2 = (activeEvent.dayIndex + 1) * wPx; top2 = 0f * hPxPerMin + topPaddingPx; bottom2 = (endMins - 1440) * hPxPerMin + topPaddingPx
-                                        hit2 = offset.x in (left2 - 40f)..(left2 + wPx + 40f) && offset.y in (top2 - 40f)..(bottom2 + 40f)
+
+                                    var targetEv = activeEvent
+                                    var hitPart = 0
+
+                                    if (currentMode == "MULTI_MOVE") {
+                                        val hit = events.find { ev ->
+                                            if (ev.id !in selectedEventIds) return@find false
+                                            val sMins = ev.startHour * 60 + ev.startMinute; val eMins = ev.endHour * 60 + ev.endMinute
+                                            val left = ev.dayIndex * wPx; val top = sMins * hPxPerMin + topPaddingPx; val bottom = minOf(eMins, 1440) * hPxPerMin + topPaddingPx
+                                            if (offset.x in left..(left+wPx) && offset.y in top..bottom) return@find true
+                                            if (eMins > 1440 && ev.dayIndex < 2) {
+                                                val left2 = (ev.dayIndex + 1) * wPx; val top2 = topPaddingPx; val bottom2 = (eMins - 1440) * hPxPerMin + topPaddingPx
+                                                if (offset.x in left2..(left2+wPx) && offset.y in top2..bottom2) return@find true
+                                            }
+                                            false
+                                        }
+                                        if (hit != null) { targetEv = hit; hitPart = 3; onEventMoveStart(hit) }
+                                    } else {
+                                        val startMins = targetEv!!.startHour * 60 + targetEv.startMinute; val endMins = targetEv.endHour * 60 + targetEv.endMinute
+                                        val isSplit = endMins > 1440
+                                        val left1 = targetEv.dayIndex * wPx; val top1 = startMins * hPxPerMin + topPaddingPx; val bottom1 = minOf(endMins, 1440) * hPxPerMin + topPaddingPx
+                                        val hit1 = offset.x in (left1 - 40f)..(left1 + wPx + 40f) && offset.y in (top1 - 40f)..(bottom1 + 40f)
+                                        var hit2 = false; var top2 = 0f; var bottom2 = 0f
+                                        if (isSplit && targetEv.dayIndex < 2) {
+                                            val left2 = (targetEv.dayIndex + 1) * wPx; top2 = 0f * hPxPerMin + topPaddingPx; bottom2 = (endMins - 1440) * hPxPerMin + topPaddingPx
+                                            hit2 = offset.x in (left2 - 40f)..(left2 + wPx + 40f) && offset.y in (top2 - 40f)..(bottom2 + 40f)
+                                        }
+                                        if (hit1 || hit2) hitPart = if (isSplit) (if (hit2 && !hit1) 2 else if (hit1 && !hit2) 1 else (if (minOf(abs(offset.y - top1), abs(offset.y - bottom1)) > minOf(abs(offset.y - top2), abs(offset.y - bottom2))) 2 else 1)) else 3
                                     }
-                                    if (hit1 || hit2) {
-                                        dragHitPart = if (isSplit) (if (hit2 && !hit1) 2 else if (hit1 && !hit2) 1 else (if (minOf(abs(offset.y - top1), abs(offset.y - bottom1)) > minOf(abs(offset.y - top2), abs(offset.y - bottom2))) 2 else 1)) else 3
+
+                                    if (targetEv != null && hitPart != 0) {
+                                        dragHitPart = hitPart
                                         dragPointer = offset
-                                        if (currentMode == "MOVE") dragTouchOffset = Offset(offset.x - left1, offset.y - top1)
-                                        else if (currentMode == "STRETCH") stretchType = if (isSplit) (if (dragHitPart == 1) "TOP" else "BOTTOM") else (if (offset.y < top1 + (bottom1 - top1) / 2f) "TOP" else "BOTTOM")
+                                        val sMins = targetEv.startHour * 60 + targetEv.startMinute
+                                        dragTouchOffset = Offset(offset.x - (targetEv.dayIndex * wPx), offset.y - (sMins * hPxPerMin + topPaddingPx))
+                                        if (currentMode == "STRETCH") stretchType = if (targetEv.endHour*60+targetEv.endMinute > 1440) (if (dragHitPart == 1) "TOP" else "BOTTOM") else (if (offset.y < (sMins * hPxPerMin + topPaddingPx) + ((targetEv.endHour*60+targetEv.endMinute - sMins)*hPxPerMin)/2f) "TOP" else "BOTTOM")
                                     } else onEventActionInvalid()
                                 },
                                 onDrag = { _, dragAmount -> if (dragHitPart != 0) dragPointer?.let { dragPointer = it + dragAmount } },
                                 onDragEnd = {
                                     if (dragHitPart != 0 && dragPointer != null && activeEvent != null) {
                                         val hHPx = with(density) { hourHeight.toPx() }
-                                        if (currentMode == "MOVE" && dragTouchOffset != null) {
+                                        if (currentMode == "MULTI_MOVE" && dragTouchOffset != null) {
+                                            onEventActionComplete(previewResult?.events ?: events)
+                                        } else if (currentMode == "MOVE" && dragTouchOffset != null) {
                                             if (dragPointer!!.y - verticalScrollState.value > gridHeightPx + 600f) onEventUnassigned(activeEvent)
                                             else {
                                                 val cWPx = with(density) { 120.dp.toPx() }; val finalHoverDayIndex = (dragPointer!!.x / cWPx).toInt().coerceIn(0, 2)
@@ -801,20 +1004,15 @@ fun TimetableGrid(
                                             }
                                         } else if (currentMode == "STRETCH" && stretchType != null) {
                                             val mappedY = if (activeEvent.endHour * 60 + activeEvent.endMinute > 1440 && dragHitPart == 2) dragPointer!!.y + 1440 * (hHPx / 60f) else dragPointer!!.y
-                                            val res = calculateStretchPreview(events, activeEvent, mappedY, stretchType!!, hHPx, dragHitPart)
+                                            val res = calculateStretchPreview(events, activeEvent, mappedY, stretchType!!, hHPx, dragHitPart, isFinalDrop = true)
 
-                                            // 🔥 수정 1: 드래그에서 손을 놓는 시점(Drop)에 요일을 넘었는지 판별하여 자동 스크롤!
                                             val oldEnd = activeEvent.endHour * 60 + activeEvent.endMinute
                                             val newEnd = res.events.find { it.id == activeEvent.id }?.let { it.endHour * 60 + it.endMinute } ?: oldEnd
                                             val oldStart = activeEvent.startHour * 60 + activeEvent.startMinute
                                             val newStart = res.events.find { it.id == activeEvent.id }?.let { it.startHour * 60 + it.startMinute } ?: oldStart
 
-                                            if (oldEnd <= 1440 && newEnd > 1440) {
-                                                coroutineScope.launch { verticalScrollState.animateScrollTo(0, tween(400)) }
-                                            } else if (oldStart >= 0 && newStart < 0) {
-                                                coroutineScope.launch { verticalScrollState.animateScrollTo(verticalScrollState.maxValue, tween(400)) }
-                                            }
-
+                                            if (oldEnd <= 1440 && newEnd > 1440) coroutineScope.launch { verticalScrollState.animateScrollTo(0, tween(400)) }
+                                            else if (oldStart >= 0 && newStart < 0) coroutineScope.launch { verticalScrollState.animateScrollTo(verticalScrollState.maxValue, tween(400)) }
                                             onEventActionComplete(res.events)
                                         }
                                     } else onEventActionInvalid()
@@ -826,7 +1024,7 @@ fun TimetableGrid(
                     }
                     .pointerInput(hourHeight, currentMode) {
                         detectTapGestures(
-                            onTap = { if (currentMode != "NORMAL") onActionCancel() else { gridPopupInfo = null; selectedPartSuffix = null } },
+                            onTap = { if (currentMode != "NORMAL" && currentMode != "SELECT") onActionCancel() else { gridPopupInfo = null; selectedPartSuffix = null } },
                             onLongPress = { offset ->
                                 if (currentMode == "NORMAL") {
                                     onEventDeselect(); selectedPartSuffix = null
@@ -876,19 +1074,22 @@ fun TimetableGrid(
 
                     visuallySplitEvents.forEach { (event, partSuffix) ->
                         key("${event.id}_$partSuffix") {
-                            val isActive = (currentMode != "NORMAL" && event.id == activeEvent?.id) || (isExternalDragging && event.id == externalDragEvent?.id)
+                            val isActive = (currentMode != "NORMAL" && currentMode != "SELECT" && event.id == activeEvent?.id) || (isExternalDragging && event.id == externalDragEvent?.id) || (currentMode == "MULTI_MOVE" && event.id == activeEvent?.id)
                             val isMagneticSnap = (isActive && currentMode == "MOVE" && (previewResult?.isMagneticSnap == true)) || (isExternalDragging && isActive && (previewResult?.isMagneticSnap == true))
                             val isNextDayPart = partSuffix == "part2" && event.id == activeEvent?.id
+
+                            val isSelectModeActive = currentMode == "SELECT" || currentMode == "MULTI_MOVE"
+                            val isSelectedGroup = event.id in selectedEventIds
+                            val targetAlpha = if (isSelectModeActive && !isSelectedGroup) 0.4f else 1.0f
 
                             EventBlockItem(
                                 event = event, hourHeightDp = hourHeight.value,
                                 isSelected = (selectedEvent?.id == event.id) && (selectedPartSuffix == partSuffix),
                                 currentMode = currentMode, isActiveTarget = isActive,
                                 isMagneticSnap = isMagneticSnap,
-                                // 🔥 수정 2: 외부 드래그(isExternalDragging)일 때도 freeX 값을 줘서 포인터를 자유롭게 따라다니게 해제!
-                                freeX = if (isActive && (currentMode == "MOVE" || isExternalDragging)) previewResult?.freeX else null,
-                                freeY = if (isActive && (currentMode == "MOVE" || isExternalDragging) && !isNextDayPart) previewResult?.freeY else null,
-                                alpha = if ((currentMode != "NORMAL" || isExternalDragging) && !isActive) 0.85f else 1.0f,
+                                freeX = if (isActive && (currentMode == "MOVE" || currentMode == "MULTI_MOVE" || isExternalDragging)) previewResult?.freeX else null,
+                                freeY = if (isActive && (currentMode == "MOVE" || currentMode == "MULTI_MOVE" || isExternalDragging) && !isNextDayPart) previewResult?.freeY else null,
+                                alpha = if ((currentMode != "NORMAL" || isExternalDragging) && !isActive && !isSelectModeActive) 0.85f else targetAlpha,
                                 isEventSplit = partSuffix != "main", partSuffix = partSuffix,
                                 onLongClick = { gridPopupInfo = null; selectedPartSuffix = partSuffix; onEventLongClick(events.find { it.id == event.id } ?: event) },
                                 onDeselect = { selectedPartSuffix = null; onEventDeselect() },
@@ -902,11 +1103,25 @@ fun TimetableGrid(
                         }
                     }
 
+                    if (currentMode == "SELECT" && selectStart != null && selectCurrent != null) {
+                        val left = minOf(selectStart!!.x, selectCurrent!!.x)
+                        val top = minOf(selectStart!!.y, selectCurrent!!.y)
+                        val width = abs(selectStart!!.x - selectCurrent!!.x)
+                        val height = abs(selectStart!!.y - selectCurrent!!.y)
+                        Box(modifier = Modifier
+                            .offset { IntOffset(left.toInt(), top.toInt()) }
+                            .size(with(density){width.toDp()}, with(density){height.toDp()})
+                            .background(Color(0x403498DB))
+                            .border(2.dp, Color(0xFF3498DB))
+                            .zIndex(100f)
+                        )
+                    }
+
                     if (gridPopupInfo != null) {
                         Popup(alignment = Alignment.TopStart, offset = gridPopupInfo!!.tapOffset, onDismissRequest = { gridPopupInfo = null }, properties = PopupProperties(focusable = true, clippingEnabled = false)) {
                             Box(modifier = Modifier.shadow(8.dp, RoundedCornerShape(12.dp)).clip(RoundedCornerShape(12.dp)).background(Color(0xFFF5F5F5)).padding(horizontal = 20.dp, vertical = 12.dp)) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(painter = painterResource(id = R.drawable.popup_paste), contentDescription = "붙여넣기", tint = if (copiedEvent != null) Color.DarkGray else Color.LightGray, modifier = Modifier.size(24.dp).clickable(enabled = copiedEvent != null) { onEventPaste(gridPopupInfo!!.dayIndex, gridPopupInfo!!.startHour, gridPopupInfo!!.startMinute); gridPopupInfo = null })
+                                    Icon(painter = painterResource(id = R.drawable.popup_paste), contentDescription = "붙여넣기", tint = if (copiedEvents.isNotEmpty()) Color.DarkGray else Color.LightGray, modifier = Modifier.size(24.dp).clickable(enabled = copiedEvents.isNotEmpty()) { onEventPaste(gridPopupInfo!!.dayIndex, gridPopupInfo!!.startHour, gridPopupInfo!!.startMinute); gridPopupInfo = null })
                                     Icon(painter = painterResource(id = R.drawable.popup_add), contentDescription = "추가", tint = Color.DarkGray, modifier = Modifier.size(24.dp).clickable { onEventAdd(gridPopupInfo!!.dayIndex, gridPopupInfo!!.startHour, gridPopupInfo!!.startMinute); gridPopupInfo = null })
                                 }
                             }
@@ -999,7 +1214,6 @@ fun EventBlockItem(
         val startMins = event.startHour * 60 + event.startMinute
         val endMins = event.endHour * 60 + event.endMinute
 
-        // 🔥 수정 1: '이전 날로 확장' 중일 때는 스케줄 내용 숨기기
         val isStretchingPrevDay = isStretching && startMins <= 0 && !isEventSplit
 
         if (!isStretchingPrevDay) {
@@ -1101,7 +1315,6 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
     var memo by remember(initialEvent) { mutableStateOf(descParts.getOrNull(1) ?: "") }
     var color by remember(initialEvent) { mutableStateOf(initialEvent.color) }
 
-    // 🔥 수정 2-3: 그리드(시간표)에서 추가 시 자동 체크(true), 미배정 라인에서 추가 시 자동 해제(false)
     var isTimeEnabled by remember(initialEvent) { mutableStateOf(initialEvent.dayIndex != -1) }
 
     var startDayIndex by remember(initialEvent) {
@@ -1156,7 +1369,6 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
             Text("(${title.length}/20)", fontSize = 12.sp, modifier = Modifier.align(Alignment.End))
             Spacer(modifier = Modifier.height(32.dp))
 
-            // 🔥 수정 2: 시간 활성화 체크박스 추가
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text("진행 시간", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.weight(1f))
@@ -1170,7 +1382,6 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
             }
             Spacer(modifier = Modifier.height(16.dp))
 
-            // 🔥 수정 2: 비활성화 시 입력창을 반투명하게 만들고 터치 차단
             Box(modifier = Modifier.alpha(if (isTimeEnabled) 1f else 0.4f)) {
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1193,7 +1404,6 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
                     if (errorMessage.isNotEmpty() && isTimeEnabled) Text(errorMessage, color = Color.Red, fontSize = 12.sp, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), textAlign = TextAlign.Center)
                 }
 
-                // 투명한 덮개를 씌워 클릭 이벤트를 원천 차단
                 if (!isTimeEnabled) {
                     Box(modifier = Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { } })
                 }
@@ -1212,7 +1422,6 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
             Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(16.dp)) {
                 Box(Modifier.weight(1f).background(Color(0xFFE0E0E0), RoundedCornerShape(12.dp)).clickable { onDismiss() }.padding(16.dp), Alignment.Center) { Text("취소", color = Color.Red, fontWeight = FontWeight.Bold) }
 
-                // 🔥 수정 2-1 & 2-2: 저장 버튼 클릭 시 isTimeEnabled 여부에 따라 미배정 블록 또는 시간표 블록으로 변환
                 Box(Modifier.weight(1f).background(Color(0xFFE0E0E0), RoundedCornerShape(12.dp)).clickable {
                     val finalTitle = title.ifEmpty { "새 일정" }
                     val finalDesc = listOf(location.trim(), memo.trim()).filter { it.isNotEmpty() }.joinToString("\n")
@@ -1227,7 +1436,6 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
                             ))
                         }
                     } else {
-                        // 미배정 라인으로 저장하기 위해 dayIndex를 -1로 고정
                         onSave(initialEvent.copy(
                             title = finalTitle, description = finalDesc,
                             dayIndex = -1, startHour = 0, startMinute = 0, endHour = 1, endMinute = 0,
