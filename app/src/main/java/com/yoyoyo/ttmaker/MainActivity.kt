@@ -88,6 +88,9 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
 
 const val snapIntervalMins = 15
 
@@ -138,30 +141,93 @@ val initialUnassignedEvents = listOf(
     EventData("기타치기 타임", "엠파이어 스테이트 빌딩", 0, 0, 0, 0, -1, Color(0xFFD35400))
 )
 
+object LocalDataManager {
+    private const val PREFS_NAME = "YoyoTimetablePrefs"
+    private const val KEY_EVENTS = "saved_events"
+    private const val KEY_UNASSIGNED = "saved_unassigned"
+
+    fun saveToLocal(context: Context, events: List<EventData>, unassigned: List<EventData>) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // apply()를 사용하면 백그라운드에서 조용히 저장되므로 화면에 전혀 렉이 걸리지 않습니다!
+        prefs.edit()
+            .putString(KEY_EVENTS, serialize(events))
+            .putString(KEY_UNASSIGNED, serialize(unassigned))
+            .apply()
+    }
+
+    fun loadEvents(context: Context): List<EventData>? {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val jsonStr = prefs.getString(KEY_EVENTS, null) ?: return null
+        return deserialize(jsonStr)
+    }
+
+    fun loadUnassigned(context: Context): List<EventData>? {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val jsonStr = prefs.getString(KEY_UNASSIGNED, null) ?: return null
+        return deserialize(jsonStr)
+    }
+
+    private fun serialize(list: List<EventData>): String {
+        val array = JSONArray()
+        for (e in list) {
+            val obj = JSONObject()
+            obj.put("title", e.title)
+            obj.put("description", e.description)
+            obj.put("startHour", e.startHour)
+            obj.put("startMinute", e.startMinute)
+            obj.put("endHour", e.endHour)
+            obj.put("endMinute", e.endMinute)
+            obj.put("dayIndex", e.dayIndex)
+            obj.put("color", e.color.value.toLong()) // Color를 숫자로 변환하여 저장
+            obj.put("id", e.id)
+            array.put(obj)
+        }
+        return array.toString()
+    }
+
+    private fun deserialize(jsonStr: String): List<EventData> {
+        val list = mutableListOf<EventData>()
+        try {
+            val array = JSONArray(jsonStr)
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                list.add(
+                    EventData(
+                        title = obj.getString("title"),
+                        description = obj.getString("description"),
+                        startHour = obj.getInt("startHour"),
+                        startMinute = obj.getInt("startMinute"),
+                        endHour = obj.getInt("endHour"),
+                        endMinute = obj.getInt("endMinute"),
+                        dayIndex = obj.getInt("dayIndex"),
+                        color = Color(obj.getLong("color").toULong()), // 숫자를 다시 Color로 복구
+                        id = obj.getString("id")
+                    )
+                )
+            }
+        } catch (e: Exception) { e.printStackTrace() }
+        return list
+    }
+}
+
 // ==========================================
 // 2. 메인 화면
-// ==========================================
-// ==========================================
-// 2. 메인 화면
-// ==========================================
-// ==========================================
-// 2. 메인 화면
-// ==========================================
-// ==========================================
-// 2. 메인 화면
-// ==========================================
-// ==========================================
-// 2. 메인 화면
-// ==========================================
 @Composable
 fun YoyoTimetableScreen() {
     val density = LocalDensity.current
     val windowInfo = LocalWindowInfo.current
-    var events by remember { mutableStateOf(initialSampleEvents) }
-    var unassignedList by remember { mutableStateOf(initialUnassignedEvents) }
+    val context = LocalContext.current
+
+    // 🔥 수정: 앱을 처음 켤 때, 저장소에 데이터가 있으면 불러오고 없으면(최초 실행) 샘플 데이터를 띄웁니다.
+    var events by remember { mutableStateOf(LocalDataManager.loadEvents(context) ?: initialSampleEvents) }
+    var unassignedList by remember { mutableStateOf(LocalDataManager.loadUnassigned(context) ?: initialUnassignedEvents) }
+
+    // 🔥 핵심: events나 unassignedList 리스트가 수정될 때마다(블록 이동, 추가, 삭제 등) 이 블록이 감지하여 자동으로 저장합니다.
+    LaunchedEffect(events, unassignedList) {
+        LocalDataManager.saveToLocal(context, events, unassignedList)
+    }
 
     var historyStack by remember { mutableStateOf(listOf<Pair<List<EventData>, List<EventData>>>()) }
-
     var selectedEvent by remember { mutableStateOf<EventData?>(null) }
     var overlapDialogInfo by remember { mutableStateOf<OverlapInfo?>(null) }
 
