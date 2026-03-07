@@ -138,6 +138,9 @@ fun YoyoTimetableScreen() {
     var events by remember { mutableStateOf(initialSampleEvents) }
     var unassignedList by remember { mutableStateOf(initialUnassignedEvents) }
 
+    // 1️⃣ 모든 상태(State) 변수들을 제일 먼저 선언합니다!
+    var historyStack by remember { mutableStateOf(listOf<Pair<List<EventData>, List<EventData>>>()) }
+
     var selectedEvent by remember { mutableStateOf<EventData?>(null) }
     var copiedEvent by remember { mutableStateOf<EventData?>(null) }
     var overlapDialogInfo by remember { mutableStateOf<OverlapInfo?>(null) }
@@ -165,6 +168,28 @@ fun YoyoTimetableScreen() {
     var itemBounds by remember { mutableStateOf(mapOf<String, Rect>()) }
     val currentItemBounds by rememberUpdatedState(itemBounds)
 
+    // 2️⃣ 변수 선언이 모두 끝난 아래쪽에 함수를 배치해야 에러가 나지 않습니다!
+    fun saveState() {
+        historyStack = (historyStack + Pair(events.toList(), unassignedList.toList())).takeLast(30)
+    }
+
+    fun undo() {
+        if (historyStack.isNotEmpty()) {
+            val prevState = historyStack.last()
+            historyStack = historyStack.dropLast(1)
+
+            // 이전 상태로 완벽 복구
+            events = prevState.first
+            unassignedList = prevState.second
+
+            // 혹시나 블록을 조작하던 중에 되돌렸을 경우를 대비한 안전장치
+            currentMode = "NORMAL"
+            activeEvent = null
+            selectedEvent = null
+        }
+    }
+
+    // 3️⃣ 화면 로직 시작
     LaunchedEffect(currentMode, isExternalDragging) {
         if (currentMode != "NORMAL" || isExternalDragging) selectedEvent = null
     }
@@ -187,6 +212,7 @@ fun YoyoTimetableScreen() {
                     isExternalDragging = isExternalDragging, externalDragEvent = externalDragEvent, externalDragPos = externalDragPos, externalDropSignal = externalDropSignal,
                     onExternalMagneticSnapChange = { isExternalMagneticSnap = it },
                     onExternalDrop = { updatedEvents, droppedId ->
+                        saveState() // 🔥 미배정 -> 시간표 이동 전 저장
                         events = updatedEvents
                         unassignedList = unassignedList.filter { it.id != droppedId }
                         isExternalDragging = false
@@ -199,6 +225,7 @@ fun YoyoTimetableScreen() {
                         externalDragPos = null
                     },
                     onEventUnassigned = { eventToUnassign ->
+                        saveState() // 🔥 시간표 -> 미배정 이동(삭제) 전 저장
                         events = events.filter { it.id != eventToUnassign.id }
                         val resetEvent = eventToUnassign.copy(startHour = 0, startMinute = 0, endHour = 1, endMinute = 0, dayIndex = -1)
                         unassignedList = unassignedList + resetEvent
@@ -213,6 +240,7 @@ fun YoyoTimetableScreen() {
                     onEventMoveStart = { eventToMove -> currentMode = "MOVE"; activeEvent = eventToMove; selectedEvent = null },
                     onEventStretchStart = { eventToStretch -> currentMode = "STRETCH"; activeEvent = eventToStretch; selectedEvent = null },
                     onEventActionComplete = { updatedEvents ->
+                        saveState() // 🔥 시간표 내 이동/길이조절 완료 전 저장
                         events = updatedEvents
                         if (currentMode == "MOVE") { currentMode = "NORMAL"; activeEvent = null }
                         else if (currentMode == "STRETCH") { activeEvent = updatedEvents.find { it.id == activeEvent?.id } }
@@ -241,7 +269,10 @@ fun YoyoTimetableScreen() {
                             }
 
                             if (overlaps.isNotEmpty()) overlapDialogInfo = OverlapInfo(newEvent, overlaps)
-                            else events = events + newEvent
+                            else {
+                                saveState() // 🔥 복사 붙여넣기 완료 전 저장
+                                events = events + newEvent
+                            }
                         }
                     },
                     onEventAdd = { dayIndex, startHour, startMinute ->
@@ -275,8 +306,15 @@ fun YoyoTimetableScreen() {
                 }
             }
 
+            // 하단 메뉴 바
             Row(modifier = Modifier.fillMaxWidth().background(Color.White).navigationBarsPadding().padding(bottom = 8.dp).height(60.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                Icon(painter = painterResource(id = R.drawable.under_undo), contentDescription = "되돌리기", modifier = Modifier.size(22.dp))
+                // 🔥 Undo 아이콘 로직 연결 및 색상 반응 추가
+                Icon(
+                    painter = painterResource(id = R.drawable.under_undo),
+                    contentDescription = "되돌리기",
+                    tint = if (historyStack.isNotEmpty()) Color.DarkGray else Color.LightGray,
+                    modifier = Modifier.size(22.dp).clickable(enabled = historyStack.isNotEmpty()) { undo() }
+                )
                 Icon(painter = painterResource(id = R.drawable.under_select), contentDescription = "드래그 모드", modifier = Modifier.size(22.dp))
                 Icon(painter = painterResource(id = R.drawable.under_ai), contentDescription = "AI 챗봇", modifier = Modifier.size(22.dp))
                 Icon(painter = painterResource(id = R.drawable.under_setting), contentDescription = "설정", modifier = Modifier.size(22.dp))
@@ -331,6 +369,7 @@ fun YoyoTimetableScreen() {
                     onDismiss = { editingEvent = null },
                     onSave = { savedEvent ->
                         if (savedEvent.dayIndex == -1) {
+                            saveState() // 🔥 수정 창에서 저장하기 전 저장
                             unassignedList = unassignedList.filter { it.id != savedEvent.id } + savedEvent
                             events = events.filter { it.id != savedEvent.id }
                             editingEvent = null
@@ -348,6 +387,7 @@ fun YoyoTimetableScreen() {
                                 overlapDialogInfo = OverlapInfo(savedEvent, overlaps)
                                 editingEvent = null
                             } else {
+                                saveState() // 🔥 수정 창에서 저장하기 전 저장
                                 events = events.filter { it.id != savedEvent.id } + savedEvent
                                 unassignedList = unassignedList.filter { it.id != savedEvent.id }
                                 editingEvent = null
@@ -368,6 +408,7 @@ fun YoyoTimetableScreen() {
             text = { Text("기존 일정을 어떻게 처리할까요?") },
             confirmButton = {
                 TextButton(onClick = {
+                    saveState() // 🔥 덮어쓰기 결단 내리기 전 저장
                     val updated = events.toMutableList()
                     updated.removeAll { it.id == info.newEvent.id }
                     updated.removeAll { old -> info.overlappingEvents.any { it.id == old.id } }
@@ -402,6 +443,7 @@ fun YoyoTimetableScreen() {
                 Row {
                     TextButton(onClick = { overlapDialogInfo = null; currentMode = "NORMAL"; activeEvent = null }) { Text("취소", color = Color.Gray) }
                     TextButton(onClick = {
+                        saveState() // 🔥 밀어넣기 결단 내리기 전 저장
                         val newStart = info.newEvent.startHour * 60 + info.newEvent.startMinute
                         events = finalizeDropWithPush(events, info.newEvent, newStart, info.newEvent.dayIndex)
                         unassignedList = unassignedList.filter { it.id != info.newEvent.id }
