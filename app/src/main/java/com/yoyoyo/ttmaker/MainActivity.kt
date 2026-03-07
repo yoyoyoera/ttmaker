@@ -480,9 +480,10 @@ fun calculateLivePreview(events: List<EventData>, movingEvent: EventData, pointe
     return PreviewResult(finalEvents, freeX, freeY, isMagneticSnap)
 }
 
-// 🔥 완벽 해결된 Stretch 물리 엔진: 공백 없이 닿을 때만 밀어내며, 올바른 스냅백 한계치 설정
+// 🔥 미리보기는 30분만, 최종 확장은 무조건 60분으로 고정하는 스마트 물리 엔진
 fun calculateStretchPreview(
-    events: List<EventData>, activeEvent: EventData, pointerY: Float, stretchType: String, hourHeightPx: Float, dragHitPart: Int = 3
+    events: List<EventData>, activeEvent: EventData, pointerY: Float, stretchType: String, hourHeightPx: Float, dragHitPart: Int = 3,
+    isFinalDrop: Boolean = false // 🔥 현재 최종 Drop 상태인지 확인하는 변수 추가
 ): PreviewResult {
     val minuteHeightPx = hourHeightPx / 60f
     val topPaddingPx = hourHeightPx / 2f
@@ -514,9 +515,13 @@ fun calculateStretchPreview(
         else if (oldStartRel < 0 && dragHitPart == 1) activeEvent.dayIndex * 1440
         else activeAbsEnd - snapIntervalMins
 
-        // 🔥 버그 1 해결: 줄어들지 않도록 원래 0시 기준으로 30분 허용
         if (pointerMins < 0 && activeEvent.dayIndex > 0 && !isOriginalSplit) {
-            newAbsStart = maxOf(limitStart, maxOf(activeEvent.dayIndex * 1440 - 60, pointerAbsMins))
+            // 🔥 최종 드롭이면 무조건 60분 확장, 드래그 중이면 최대 30분까지만 미리보기
+            if (isFinalDrop) {
+                newAbsStart = maxOf(limitStart, activeEvent.dayIndex * 1440 - 60)
+            } else {
+                newAbsStart = maxOf(limitStart, maxOf(activeEvent.dayIndex * 1440 - 30, pointerAbsMins))
+            }
         } else {
             newAbsStart = maxOf(limitStart, minOf(snappedAbsMins.coerceAtLeast(0), maxStartAllowed))
         }
@@ -537,9 +542,13 @@ fun calculateStretchPreview(
         else if (oldStartRel < 0 && dragHitPart == 2) activeEvent.dayIndex * 1440
         else activeAbsStart + snapIntervalMins
 
-        // 🔥 버그 1 해결: 줄어들지 않도록 원래 24시(1440) 기준으로 30분 허용
         if (pointerMins > 1440 && activeEvent.dayIndex < 2 && !isOriginalSplit) {
-            newAbsEnd = minOf(limitEnd, minOf(pointerAbsMins, activeEvent.dayIndex * 1440 + 1500))
+            // 🔥 최종 드롭이면 무조건 60분 확장(1500), 드래그 중이면 최대 30분(1470)까지만 미리보기
+            if (isFinalDrop) {
+                newAbsEnd = minOf(limitEnd, activeEvent.dayIndex * 1440 + 1500)
+            } else {
+                newAbsEnd = minOf(limitEnd, minOf(pointerAbsMins, activeEvent.dayIndex * 1440 + 1470))
+            }
         } else {
             newAbsEnd = minOf(limitEnd, maxOf(snappedAbsMins.coerceAtMost(4320), minEndAllowed))
         }
@@ -625,6 +634,9 @@ fun finalizeDropWithPush(events: List<EventData>, movingEvent: EventData, finalS
     return finalizedEvents
 }
 
+// ==========================================
+// 3. 시간표 그리드
+// ==========================================
 @Composable
 fun TimetableGrid(
     events: List<EventData>, selectedEvent: EventData?, copiedEvent: EventData?,
@@ -748,6 +760,19 @@ fun TimetableGrid(
                                         } else if (currentMode == "STRETCH" && stretchType != null) {
                                             val mappedY = if (activeEvent.endHour * 60 + activeEvent.endMinute > 1440 && dragHitPart == 2) dragPointer!!.y + 1440 * (hHPx / 60f) else dragPointer!!.y
                                             val res = calculateStretchPreview(events, activeEvent, mappedY, stretchType!!, hHPx, dragHitPart)
+
+                                            // 🔥 수정 1: 드래그에서 손을 놓는 시점(Drop)에 요일을 넘었는지 판별하여 자동 스크롤!
+                                            val oldEnd = activeEvent.endHour * 60 + activeEvent.endMinute
+                                            val newEnd = res.events.find { it.id == activeEvent.id }?.let { it.endHour * 60 + it.endMinute } ?: oldEnd
+                                            val oldStart = activeEvent.startHour * 60 + activeEvent.startMinute
+                                            val newStart = res.events.find { it.id == activeEvent.id }?.let { it.startHour * 60 + it.startMinute } ?: oldStart
+
+                                            if (oldEnd <= 1440 && newEnd > 1440) {
+                                                coroutineScope.launch { verticalScrollState.animateScrollTo(0, tween(400)) }
+                                            } else if (oldStart >= 0 && newStart < 0) {
+                                                coroutineScope.launch { verticalScrollState.animateScrollTo(verticalScrollState.maxValue, tween(400)) }
+                                            }
+
                                             onEventActionComplete(res.events)
                                         }
                                     } else onEventActionInvalid()
@@ -776,7 +801,6 @@ fun TimetableGrid(
                 ) {
                     Row { days.forEachIndexed { _, _ -> Box(modifier = Modifier.width(120.dp).fillMaxHeight()) { Column { Spacer(modifier = Modifier.height(hourHeight / 2f)); (0..24).toList().forEach { _ -> Box(modifier = Modifier.height(hourHeight).fillMaxWidth()) { HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f), thickness = 1.dp) } } } } } }
 
-                    // 🔥 버그 2 해결: 드래그 중인 원본 블록은 분할하지 않고 길게 냅둬서 24:30까지 쫀득하게 내려가도록 허용!
                     val visuallySplitEvents = displayEvents.flatMap { event ->
                         val startMins = event.startHour * 60 + event.startMinute
                         val endMins = event.endHour * 60 + event.endMinute
@@ -818,7 +842,10 @@ fun TimetableGrid(
                                 event = event, hourHeightDp = hourHeight.value,
                                 isSelected = (selectedEvent?.id == event.id) && (selectedPartSuffix == partSuffix),
                                 currentMode = currentMode, isActiveTarget = isActive,
-                                isMagneticSnap = isMagneticSnap, freeX = if (isActive && currentMode == "MOVE") previewResult?.freeX else null, freeY = if (isActive && currentMode == "MOVE" && !isNextDayPart) previewResult?.freeY else null,
+                                isMagneticSnap = isMagneticSnap,
+                                // 🔥 수정 2: 외부 드래그(isExternalDragging)일 때도 freeX 값을 줘서 포인터를 자유롭게 따라다니게 해제!
+                                freeX = if (isActive && (currentMode == "MOVE" || isExternalDragging)) previewResult?.freeX else null,
+                                freeY = if (isActive && (currentMode == "MOVE" || isExternalDragging) && !isNextDayPart) previewResult?.freeY else null,
                                 alpha = if ((currentMode != "NORMAL" || isExternalDragging) && !isActive) 0.85f else 1.0f,
                                 isEventSplit = partSuffix != "main", partSuffix = partSuffix,
                                 onLongClick = { gridPopupInfo = null; selectedPartSuffix = partSuffix; onEventLongClick(events.find { it.id == event.id } ?: event) },
@@ -927,16 +954,20 @@ fun EventBlockItem(
                 )
             }
     ) {
-        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
-            Text(text = event.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (event.description.isNotEmpty()) Text(text = event.description, color = Color.White.copy(alpha = 0.9f), fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 14.sp)
+        val startMins = event.startHour * 60 + event.startMinute
+        val endMins = event.endHour * 60 + event.endMinute
+
+        // 🔥 수정 1: '이전 날로 확장' 중일 때는 스케줄 내용 숨기기
+        val isStretchingPrevDay = isStretching && startMins <= 0 && !isEventSplit
+
+        if (!isStretchingPrevDay) {
+            Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                Text(text = event.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (event.description.isNotEmpty()) Text(text = event.description, color = Color.White.copy(alpha = 0.9f), fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 14.sp)
+            }
         }
 
         if (isStretching && realDuration > 0) {
-            val endMins = event.endHour * 60 + event.endMinute
-            val startMins = event.startHour * 60 + event.startMinute
-
-            // 🔥 버그 2 해결: 분할되지 않은 상태(main)이면서 24시를 초과했을 때 라벨 완벽 유지!
             if (endMins >= 1440 && !isEventSplit) {
                 Column(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("다음 날로 확장", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -1028,6 +1059,9 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
     var memo by remember(initialEvent) { mutableStateOf(descParts.getOrNull(1) ?: "") }
     var color by remember(initialEvent) { mutableStateOf(initialEvent.color) }
 
+    // 🔥 수정 2-3: 그리드(시간표)에서 추가 시 자동 체크(true), 미배정 라인에서 추가 시 자동 해제(false)
+    var isTimeEnabled by remember(initialEvent) { mutableStateOf(initialEvent.dayIndex != -1) }
+
     var startDayIndex by remember(initialEvent) {
         var d = if (initialEvent.dayIndex == -1) 0 else initialEvent.dayIndex
         var s = initialEvent.startHour * 60 + initialEvent.startMinute
@@ -1079,26 +1113,50 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
             }
             Text("(${title.length}/20)", fontSize = 12.sp, modifier = Modifier.align(Alignment.End))
             Spacer(modifier = Modifier.height(32.dp))
-            Text("진행 시간", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+
+            // 🔥 수정 2: 시간 활성화 체크박스 추가
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text("진행 시간", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.weight(1f))
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { isTimeEnabled = !isTimeEnabled }.padding(4.dp)) {
+                    Box(modifier = Modifier.size(20.dp).border(2.dp, if (isTimeEnabled) Color(0xFF3498DB) else Color.Gray, RoundedCornerShape(4.dp)).background(if (isTimeEnabled) Color(0xFF3498DB) else Color.Transparent, RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) {
+                        if (isTimeEnabled) Text("✔", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("시간 활성화", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (isTimeEnabled) Color(0xFF3498DB) else Color.Gray)
+                }
+            }
             Spacer(modifier = Modifier.height(16.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                DropdownSelector(days[startDayIndex], days, { val n = days.indexOf(it); if (n * 1440 + startMins >= totalE) errorMessage = "시작이 종료보다 늦을 수 없습니다!" else { startDayIndex = n; errorMessage = "" } }, Modifier.weight(1.2f))
-                Spacer(Modifier.width(8.dp))
-                DropdownSelector(String.format("%02d", startMins/60), (0..23).map { String.format("%02d", it) }, { val h = it.toInt(); if (startDayIndex*1440 + h*60 + startMins%60 >= totalE) errorMessage = "시작이 종료보다 늦을 수 없습니다!" else { startMins = h*60 + startMins%60; errorMessage = "" } }, Modifier.weight(0.7f))
-                Text(":", Modifier.padding(4.dp))
-                DropdownSelector(String.format("%02d", startMins%60), (0..55 step 5).map { String.format("%02d", it) }, { val m = it.toInt(); if (startDayIndex*1440 + (startMins/60)*60 + m >= totalE) errorMessage = "시작이 종료보다 늦을 수 없습니다!" else { startMins = (startMins/60)*60 + m; errorMessage = "" } }, Modifier.weight(0.7f))
-                Text("부터", Modifier.padding(start = 8.dp))
+
+            // 🔥 수정 2: 비활성화 시 입력창을 반투명하게 만들고 터치 차단
+            Box(modifier = Modifier.alpha(if (isTimeEnabled) 1f else 0.4f)) {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        DropdownSelector(days[startDayIndex], days, { val n = days.indexOf(it); if (n * 1440 + startMins >= totalE) errorMessage = "시작이 종료보다 늦을 수 없습니다!" else { startDayIndex = n; errorMessage = "" } }, Modifier.weight(1.2f))
+                        Spacer(Modifier.width(8.dp))
+                        DropdownSelector(String.format("%02d", startMins/60), (0..23).map { String.format("%02d", it) }, { val h = it.toInt(); if (startDayIndex*1440 + h*60 + startMins%60 >= totalE) errorMessage = "시작이 종료보다 늦을 수 없습니다!" else { startMins = h*60 + startMins%60; errorMessage = "" } }, Modifier.weight(0.7f))
+                        Text(":", Modifier.padding(4.dp))
+                        DropdownSelector(String.format("%02d", startMins%60), (0..55 step 5).map { String.format("%02d", it) }, { val m = it.toInt(); if (startDayIndex*1440 + (startMins/60)*60 + m >= totalE) errorMessage = "시작이 종료보다 늦을 수 없습니다!" else { startMins = (startMins/60)*60 + m; errorMessage = "" } }, Modifier.weight(0.7f))
+                        Text("부터", Modifier.padding(start = 8.dp))
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        DropdownSelector(days[dEIdx], days, { val n = days.indexOf(it); val nE = n*1440 + dEM; if (nE <= totalS) errorMessage = "종료가 시작보다 빨라야 합니다!" else if ((nE-1)/1440 - startDayIndex >= 2) errorMessage = "최대 2일만 가능합니다!" else { endDayIndex = nE/1440; endMins = nE%1440; errorMessage = "" } }, Modifier.weight(1.2f))
+                        Spacer(Modifier.width(8.dp))
+                        DropdownSelector(String.format("%02d", dEM/60), (0..24).map { String.format("%02d", it) }, { val h = it.toInt(); val nE = dEIdx*1440 + h*60 + (if(h==24) 0 else dEM%60); if (nE <= totalS) errorMessage = "종료가 시작보다 빨라야 합니다!" else { endDayIndex = nE/1440; endMins = nE%1440; errorMessage = "" } }, Modifier.weight(0.7f))
+                        Text(":", Modifier.padding(4.dp))
+                        DropdownSelector(String.format("%02d", dEM%60), (if(dEM/60==24) listOf("00") else (0..55 step 5).map { String.format("%02d", it) }), { val m = it.toInt(); val nE = dEIdx*1440 + (dEM/60)*60 + m; if (nE <= totalS) errorMessage = "종료가 시작보다 빨라야 합니다!" else { endDayIndex = nE/1440; endMins = nE%1440; errorMessage = "" } }, Modifier.weight(0.7f))
+                        Text("까지", Modifier.padding(start = 8.dp))
+                    }
+                    if (errorMessage.isNotEmpty() && isTimeEnabled) Text(errorMessage, color = Color.Red, fontSize = 12.sp, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), textAlign = TextAlign.Center)
+                }
+
+                // 투명한 덮개를 씌워 클릭 이벤트를 원천 차단
+                if (!isTimeEnabled) {
+                    Box(modifier = Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { } })
+                }
             }
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                DropdownSelector(days[dEIdx], days, { val n = days.indexOf(it); val nE = n*1440 + dEM; if (nE <= totalS) errorMessage = "종료가 시작보다 빨라야 합니다!" else if ((nE-1)/1440 - startDayIndex >= 2) errorMessage = "최대 2일만 가능합니다!" else { endDayIndex = nE/1440; endMins = nE%1440; errorMessage = "" } }, Modifier.weight(1.2f))
-                Spacer(Modifier.width(8.dp))
-                DropdownSelector(String.format("%02d", dEM/60), (0..24).map { String.format("%02d", it) }, { val h = it.toInt(); val nE = dEIdx*1440 + h*60 + (if(h==24) 0 else dEM%60); if (nE <= totalS) errorMessage = "종료가 시작보다 빨라야 합니다!" else { endDayIndex = nE/1440; endMins = nE%1440; errorMessage = "" } }, Modifier.weight(0.7f))
-                Text(":", Modifier.padding(4.dp))
-                DropdownSelector(String.format("%02d", dEM%60), (if(dEM/60==24) listOf("00") else (0..55 step 5).map { String.format("%02d", it) }), { val m = it.toInt(); val nE = dEIdx*1440 + (dEM/60)*60 + m; if (nE <= totalS) errorMessage = "종료가 시작보다 빨라야 합니다!" else { endDayIndex = nE/1440; endMins = nE%1440; errorMessage = "" } }, Modifier.weight(0.7f))
-                Text("까지", Modifier.padding(start = 8.dp))
-            }
-            if (errorMessage.isNotEmpty()) Text(errorMessage, color = Color.Red, fontSize = 12.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+
             Spacer(Modifier.height(32.dp))
             Text("장소", fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
@@ -1108,19 +1166,32 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
             Spacer(Modifier.height(8.dp))
             BasicTextField(memo, { if (it.length <= 20) memo = it }, Modifier.fillMaxWidth().background(Color(0xFFEEEEEE), RoundedCornerShape(8.dp)).padding(16.dp), decorationBox = { if (memo.isEmpty()) Text("간단한 메모를 입력하세요", color = Color.Gray); it() })
             Spacer(Modifier.weight(1f))
+
             Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(16.dp)) {
                 Box(Modifier.weight(1f).background(Color(0xFFE0E0E0), RoundedCornerShape(12.dp)).clickable { onDismiss() }.padding(16.dp), Alignment.Center) { Text("취소", color = Color.Red, fontWeight = FontWeight.Bold) }
+
+                // 🔥 수정 2-1 & 2-2: 저장 버튼 클릭 시 isTimeEnabled 여부에 따라 미배정 블록 또는 시간표 블록으로 변환
                 Box(Modifier.weight(1f).background(Color(0xFFE0E0E0), RoundedCornerShape(12.dp)).clickable {
-                    onSave(initialEvent.copy(
-                        title = title.ifEmpty { "새 일정" },
-                        description = listOf(location.trim(), memo.trim()).filter { it.isNotEmpty() }.joinToString("\n"),
-                        dayIndex = if(initialEvent.dayIndex == -1) -1 else startDayIndex,
-                        startHour = startMins/60,
-                        startMinute = startMins%60,
-                        endHour = (totalE - startDayIndex*1440)/60,
-                        endMinute = (totalE - startDayIndex*1440)%60,
-                        color = color
-                    ))
+                    val finalTitle = title.ifEmpty { "새 일정" }
+                    val finalDesc = listOf(location.trim(), memo.trim()).filter { it.isNotEmpty() }.joinToString("\n")
+
+                    if (isTimeEnabled) {
+                        if (errorMessage.isEmpty()) {
+                            onSave(initialEvent.copy(
+                                title = finalTitle, description = finalDesc,
+                                dayIndex = startDayIndex, startHour = startMins/60, startMinute = startMins%60,
+                                endHour = (totalE - startDayIndex*1440)/60, endMinute = (totalE - startDayIndex*1440)%60,
+                                color = color
+                            ))
+                        }
+                    } else {
+                        // 미배정 라인으로 저장하기 위해 dayIndex를 -1로 고정
+                        onSave(initialEvent.copy(
+                            title = finalTitle, description = finalDesc,
+                            dayIndex = -1, startHour = 0, startMinute = 0, endHour = 1, endMinute = 0,
+                            color = color
+                        ))
+                    }
                 }.padding(16.dp), Alignment.Center) { Text("적용", color = Color(0xFF3498DB), fontWeight = FontWeight.Bold) }
             }
         }
