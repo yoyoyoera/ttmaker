@@ -24,6 +24,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -104,6 +105,7 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import androidx.compose.ui.layout.ContentScale
 
 const val snapIntervalMins = 15
 
@@ -150,10 +152,15 @@ fun getFormattedDateRange(startMs: Long, endMs: Long): String {
     return "${sdf.format(Date(startMs))}-${sdf.format(Date(endMs))}"
 }
 
+// 🔥 수정 1: 밀리초 단위의 미세한 시간 오차 때문에 마지막 날이 잘리지 않도록 완벽히 0으로 세팅!
 fun generateDaysList(startMs: Long, endMs: Long): List<String> {
     val days = mutableListOf<String>()
     val cal = Calendar.getInstance().apply { timeInMillis = startMs }
     val endCal = Calendar.getInstance().apply { timeInMillis = endMs }
+
+    cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0); cal.set(Calendar.SECOND, 0); cal.set(Calendar.MILLISECOND, 0)
+    endCal.set(Calendar.HOUR_OF_DAY, 0); endCal.set(Calendar.MINUTE, 0); endCal.set(Calendar.SECOND, 0); endCal.set(Calendar.MILLISECOND, 0)
+
     val sdf = SimpleDateFormat("d(E)", Locale.KOREAN)
     while (!cal.after(endCal)) {
         days.add(sdf.format(cal.time))
@@ -283,14 +290,40 @@ fun YoyoAppNavigation() {
 fun MainMenuScreen(timetables: List<TimetableData>, onOpenTimetable: (String) -> Unit, onAddClick: () -> Unit, onDelete: (String) -> Unit) {
     Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
         // 상단 바 (로고 및 버튼)
-        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 20.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            // 🔥 로고 이미지 (res/drawable/ttmakerlogo.png 가 있어야 합니다. 없으면 에러나니 Text로 임시 대체 가능)
-            // Image(painter = painterResource(id = R.drawable.ttmakerlogo), contentDescription = "Logo", modifier = Modifier.height(30.dp))
-            Text("ttmaker", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-1.5).sp) // 임시 텍스트 로고
+        // 🔥 수정: 전체 바의 세로 길이를 살짝 늘리고 패딩을 조절해 로고가 아래로 내려올 공간 확보
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 24.dp) // 세로 패딩 소폭 증가
+                .height(40.dp), // 상단 바 전체 세로 길이 명시
+            verticalAlignment = Alignment.CenterVertically, // 아이콘은 중앙 정렬
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                IconButton(onClick = onAddClick) { Icon(Icons.Rounded.Add, contentDescription = "추가", modifier = Modifier.size(28.dp)) }
-                IconButton(onClick = { /* 설정 화면 (나중에 구현) */ }) { Icon(Icons.Rounded.Settings, contentDescription = "설정", modifier = Modifier.size(26.dp)) }
+            // 🔥 수정 1: 로고의 세로 길이를 38.dp로 더 키우고, padding(top)을 주어 아이콘들보다 조금 더 아래로 위치하게 함
+            Image(
+                painter = painterResource(id = R.drawable.ttmaker_2),
+                contentDescription = "Logo",
+                modifier = Modifier
+                    .height(27.dp) //
+                    .padding(top = 6.dp), // 🔥 아래로 내려오게 하는 핵심 패딩
+                contentScale = ContentScale.FillHeight // 세로 비율에 맞춰 꽉 채움
+            )
+
+            // 🔥 수정 2: 로고와 action 버튼들이 정렬될 수 있도록 vertical alignment 명시
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 🔥 수정 3: (+) 아이콘 크기를 진짜 조금만 더 줄임 (이전 24.dp -> 21.dp)
+                IconButton(onClick = onAddClick) {
+                    Icon(painter = painterResource(id = R.drawable.popup_add), contentDescription = "추가", modifier = Modifier.size(21.dp))
+                }
+
+                // 설정 아이콘 크기는 유지 (이전과 동일한 24.dp)
+                IconButton(onClick = { /* 설정 화면 (나중에 구현) */ }) {
+                    Icon(painter = painterResource(id = R.drawable.under_setting), contentDescription = "설정", modifier = Modifier.size(24.dp))
+                }
             }
         }
 
@@ -314,13 +347,15 @@ fun TimetableCardItem(tt: TimetableData, onClick: () -> Unit, onDelete: () -> Un
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(text = getFormattedDateRange(tt.startMs, tt.endMs), fontSize = 12.sp, color = Color.DarkGray)
                 Spacer(modifier = Modifier.weight(1f))
+
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Rounded.Share, contentDescription = "공유", tint = Color.Gray, modifier = Modifier.size(20.dp).clickable { /* 공유 기능 */ })
-                    Icon(Icons.Rounded.Delete, contentDescription = "삭제", tint = Color.Gray, modifier = Modifier.size(20.dp).clickable { showDeleteConfirm = true })
+                    // 🔥 수정 2: 커스텀 공유, 삭제 아이콘 적용
+                    Icon(painter = painterResource(id = R.drawable.icon_share), contentDescription = "공유", tint = Color.Gray, modifier = Modifier.size(20.dp).clickable { /* 공유 기능 */ })
+                    Icon(painter = painterResource(id = R.drawable.icon_delete), contentDescription = "삭제", tint = Color.Gray, modifier = Modifier.size(20.dp).clickable { showDeleteConfirm = true })
                 }
             }
 
-            // 🔥 대망의 미니 타임테이블 (Mini-map)
+            // 미니 타임테이블 (Mini-map)
             val daysCount = generateDaysList(tt.startMs, tt.endMs).size
             MiniTimetableMap(events = tt.events, daysCount = daysCount, modifier = Modifier.width(80.dp).fillMaxHeight().padding(start = 16.dp))
         }
@@ -365,9 +400,13 @@ fun MiniTimetableMap(events: List<EventData>, daysCount: Int, modifier: Modifier
 fun CreateTimetableDialog(onDismiss: () -> Unit, onCreate: (String, Long, Long) -> Unit) {
     val context = LocalContext.current
     var title by remember { mutableStateOf("") }
-    val today = Calendar.getInstance()
+
+    val today = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+    }
+
     var startMs by remember { mutableStateOf(today.timeInMillis) }
-    var endMs by remember { mutableStateOf(today.timeInMillis + (1000 * 60 * 60 * 24 * 2)) } // 기본 3일
+    var endMs by remember { mutableStateOf(today.timeInMillis + (1000L * 60 * 60 * 24 * 2)) } // 기본 3일
     var errorMessage by remember { mutableStateOf("") }
 
     val sdf = SimpleDateFormat("yyyy.M.d(E)", Locale.KOREAN)
@@ -375,7 +414,10 @@ fun CreateTimetableDialog(onDismiss: () -> Unit, onCreate: (String, Long, Long) 
     fun showPicker(initialMs: Long, onDateSet: (Long) -> Unit) {
         val cal = Calendar.getInstance().apply { timeInMillis = initialMs }
         DatePickerDialog(context, { _, y, m, d ->
-            val setCal = Calendar.getInstance().apply { set(y, m, d, 0, 0, 0) }
+            val setCal = Calendar.getInstance().apply {
+                set(y, m, d, 0, 0, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
             onDateSet(setCal.timeInMillis)
         }, cal.get(Calendar.YEAR), cal.get(Calendar.MONTH), cal.get(Calendar.DAY_OF_MONTH)).show()
     }
@@ -408,11 +450,14 @@ fun CreateTimetableDialog(onDismiss: () -> Unit, onCreate: (String, Long, Long) 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     Box(modifier = Modifier.weight(1f).background(Color(0xFFE0E0E0), RoundedCornerShape(12.dp)).clickable { onDismiss() }.padding(16.dp), contentAlignment = Alignment.Center) { Text("취소", color = Color.Red, fontWeight = FontWeight.Bold) }
                     Box(modifier = Modifier.weight(1f).background(Color(0xFFE0E0E0), RoundedCornerShape(12.dp)).clickable {
-                        val finalTitle = title.ifEmpty { "새로운 시간표" }
+                        val finalTitle = title.ifEmpty { "새 타임 테이블" }
                         val diffDays = (endMs - startMs) / (1000 * 60 * 60 * 24)
-                        if (endMs < startMs) errorMessage = "종료일이 시작일보다 빠를 수 없습니다!"
-                        else if (diffDays > 13) errorMessage = "최대 14일까지만 생성 가능합니다."
+
+                        // 🔥 수정 2: 일주일(7일) 초과 시 경고 메시지 출력 (diffDays가 6보다 크면 7일 초과)
+                        if (endMs < startMs) errorMessage = "종료일이 시작일보다 빠를 수 없습니다."
+                        else if (diffDays > 6) errorMessage = "최대 7일까지만 생성 가능합니다."
                         else onCreate(finalTitle, startMs, endMs)
+
                     }.padding(16.dp), contentAlignment = Alignment.Center) { Text("생성", color = Color(0xFF3498DB), fontWeight = FontWeight.Bold) }
                 }
             }
@@ -477,7 +522,7 @@ fun TimetableEditorScreen(timetable: TimetableData, onBack: () -> Unit, onSave: 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("<", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.Gray, modifier = Modifier.clickable { onBack() }.padding(end = 16.dp))
+                Text("◀", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.Gray, modifier = Modifier.clickable { onBack() }.padding(end = 16.dp))
                 Column {
                     Text(text = timetable.title, fontSize = 24.sp, fontWeight = FontWeight.Bold)
                     Text(text = getFormattedDateRange(timetable.startMs, timetable.endMs), fontSize = 12.sp, color = Color.DarkGray)
