@@ -95,7 +95,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            Surface(modifier = Modifier.fillMaxSize(), color = Color.White) {
+            // 🔥 수정 1: systemBarsPadding()을 추가하여 기기 고유의 상태바/네비게이션 바 영역을 침범하지 않도록 보호합니다.
+            Surface(modifier = Modifier.fillMaxSize().systemBarsPadding(), color = Color.White) {
                 YoyoTimetableScreen()
             }
         }
@@ -1458,7 +1459,8 @@ fun EventEditScreen(initialEvent: EventData, onDismiss: () -> Unit, onSave: (Eve
         Color(0xFF34495E), Color(0xFFFF4081), Color(0xFF69F0AE), Color(0xFFBCAAA4)
     )
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.White).pointerInput(Unit){}) {
+    // 🔥 수정 1-2: systemBarsPadding() 및 imePadding()(키보드 회피) 적용
+    Box(modifier = Modifier.fillMaxSize().background(Color.White).systemBarsPadding().imePadding().pointerInput(Unit){}) {
         Column(modifier = Modifier.fillMaxSize().padding(24.dp).padding(top = 40.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 BasicTextField(value = title, onValueChange = { if (it.length <= 20) title = it }, textStyle = TextStyle(fontSize = 28.sp, fontWeight = FontWeight.Bold), modifier = Modifier.weight(1f), decorationBox = { if (title.isEmpty()) Text("일정 제목", color = Color.LightGray, fontSize = 28.sp, fontWeight = FontWeight.Bold); it() })
